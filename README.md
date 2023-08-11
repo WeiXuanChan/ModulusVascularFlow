@@ -5,8 +5,8 @@ NVIDIA Modulus:https://docs.nvidia.com/deeplearning/modulus/modulus-v2209/index.
 
 Codes extention from NVIDIA Modulus can be found in folder ModulusDL
 
-##Examples
-####Multicase PINN for 2D stenosis
+## Examples
+#### Multicase PINN for 2D stenosis
 stenosis2dsimplemode_plus_0hb.py : plus size Modes Network (codes fully commented)
 	
 stenosis2dsimplemode_0hb.py : full size Modes Network
