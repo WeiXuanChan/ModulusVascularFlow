@@ -120,6 +120,7 @@ class HLine(Geometry):
 class Channel2D_centerfocused(Geometry):
     """
     2D Channel (no bounding curves in x-direction)
+    stenosis area has a higher sampling density function
 
     Parameters
     ----------
@@ -194,6 +195,9 @@ class Channel2D_centerfocused(Geometry):
 
 
 class ParabolicInlet(PDE):
+    '''
+    Parabolic inlet boundary equation
+    '''
     def __init__(self, r_ref,l_ref,umax):
         # coordinates
         dissq = Symbol("dissq")
@@ -214,6 +218,9 @@ class ParabolicInlet(PDE):
         )  # "custom_pde" key name will be used in constraints
         
 class vel_sumtorefQ(PDE):
+    '''
+    Outputs the flow rates wrt a straight channel
+    '''
     def __init__(self,l,num,target=0.):
         # coordinates
         x = Symbol("x")
@@ -234,6 +241,9 @@ import torch
 from torch import Tensor
 
 class Stenosis(torch.nn.Module):
+    '''
+    Coordinates deformation to a stenosis channel
+    '''
     def __init__(self,r,l):
         super().__init__()
         r=torch.tensor(r)
@@ -248,6 +258,9 @@ class Stenosis(torch.nn.Module):
         y_case=y_ref*(1.-A/0.05*torch.exp(-1.*(x_ref/self.l)**2./(2.*sigma**2.)))
         return torch.cat((x_ref,y_case),-1)
 class GE(torch.nn.Module):
+    '''
+    Calculation of the normalized distance from inlet (to outlet) and radius from centerline
+    '''
     def __init__(self,r,l):
         super().__init__()
         r=torch.tensor(r)
@@ -263,16 +276,25 @@ class GE(torch.nn.Module):
         cline=2.*x_case/self.l
         return torch.cat((cline,radius),-1)
 class Dissq(torch.nn.Module):
+    '''
+    calculates the squared distance from wall
+    '''
     def __init__(self):
         super().__init__()
     def forward(self,x):
         return 1.-x[...,0:1]**2.
 class warped(torch.nn.Module):
+    '''
+    Outputs the deformation from the case coordinates andreference channel coordinates
+    '''
     def __init__(self):
         super().__init__()
     def forward(self,x):
         return x[...,2:4]-x[...,0:2]
 class Newcoord(torch.nn.Module):
+    '''
+    scaling back the coordinates to meters
+    '''
     def __init__(self,s):
         super().__init__()
         s=torch.tensor(s)
@@ -280,6 +302,9 @@ class Newcoord(torch.nn.Module):
     def forward(self,x):
         return self.s*x[...,0:3]
 class hardbound(torch.nn.Module):
+    '''
+    applying parabolic function as hard boundary constraints
+    '''
     def __init__(self):
         super().__init__()
     def forward(self,x):#0:u_0,1:u_1,2:u_2,3:v_0,4:v_1,5:v_2,6:cline,7:radius_y,8:vec_x,9:vec_y
@@ -288,10 +313,14 @@ class hardbound(torch.nn.Module):
         v=(x[...,3:4]+x[...,4:5]*x[...,9:10]+x[...,5:6]*x[...,8:9]*x[...,7:8])*parabola
         return torch.cat((u,v),-1)
 class incrorder(torch.nn.Module):
+    '''
+    cross-multiplication of variables
+    '''
     def __init__(self):
         super().__init__()
     def forward(self,x):#cline,radius_y
         return torch.cat((x[...,0:1]**2.,x[...,1:2]**2.,x[...,0:1]*x[...,1:2],x[...,0:1]*x[...,2:3],x[...,1:2]*x[...,2:3]),-1)
+#set training case parameters
 caseID_param_keys=[Key("A"),Key("sigma")]
 caseID_param_values=np.array([[0.015,0.1],
                               [0.022,0.1],
@@ -309,7 +338,9 @@ caseID_param_values=np.array([[0.015,0.1],
                               [0.022,0.18],
                               [0.028,0.18],
                               [0.035,0.18]])
+#set one of the test case parameters
 caseID_param_testvalues=np.array([[0.025,0.134]])
+#set caseID as parameterization for Modulus geometry
 param_ranges = {
     Symbol("caseID"): np.arange(caseID_param_values.shape[0]).reshape((-1,1)),
 }
@@ -375,6 +406,7 @@ def run(cfg: ModulusConfig) -> None:
         parameterization=pr,
     )
     volume_geo = channel
+    #create checkpoints 
     tubechkpt=[]
     for chkpt_x in channel_checkpoint_nd:
         
@@ -558,6 +590,7 @@ def run(cfg: ModulusConfig) -> None:
         parameterization=param_ranges,
     )
     domain.add_constraint(interior, "interior")
+    # flow rate checkpoints -- it is not used as it is not added to domain "domain.add_constraint(sameQ_chkpt[n], "sameQ_chkpt"+str(n))" was commented out
     sameQ_chkpt=[]
     for n in range(len(tubechkpt)):
         sameQ_chkpt.append(IntegralBoundaryConstraint(
@@ -568,7 +601,8 @@ def run(cfg: ModulusConfig) -> None:
             integral_batch_size=cfg.batch_size.chkpt*batchsizefactor,
         ))
         #domain.add_constraint(sameQ_chkpt[n], "sameQ_chkpt"+str(n)) 
-    
+        
+    #sample points on interior and boundary for inferencers data output
     interior_pts=volume_geo.sample_interior(1600)
     boundary_pts=volume_geo.sample_boundary(400)
     total_pts=2000
