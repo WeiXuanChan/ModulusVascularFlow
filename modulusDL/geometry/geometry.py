@@ -49,6 +49,7 @@ from modulus.geometry.parameterization import Parameterization, Parameter
 
 class HLine(Geometry):
     """
+    This class is adapted from NVIDIAModulus v22.09 geometry.Vline
     2D Line parallel to y-axis
 
     Parameters
@@ -111,7 +112,7 @@ class HLine(Geometry):
 class FlexibleTube(Geometry):
     """
     3D Cylinder
-    Axis parallel to z-axis
+    centerline parallel to z-axis
 
     Parameters
     ----------
