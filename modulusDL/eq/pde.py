@@ -13,6 +13,8 @@ from modulus.key import Key
 
 class NavierStokes_CoordTransformed(PDE):
     """
+    This class is adapted from NVIDIAModulus v22.09 pde.NavierStokes
+    the coordinates are adapted to allow for user defined str
     Compressible Navier Stokes equations
 
     Parameters
@@ -262,6 +264,8 @@ class NavierStokes_CoordTransformed(PDE):
                 self.equations.pop("compatibility_w_yz")
 class Diffusion_CoordTransformed(PDE):
     """
+    This class is adapted from NVIDIAModulus v22.09 pde.NavierStokes
+    the coordinates are adapted to allow for user defined str
     Diffusion equation
 
     Parameters
