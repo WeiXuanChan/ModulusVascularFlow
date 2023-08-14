@@ -32,6 +32,10 @@ from omegaconf import DictConfig, OmegaConf
 
 
 class Solver_NoRecordConstraints(Solver):
+    '''
+    This class is adapted from NVIDIAModulus v22.09 solver.Solver
+    to allow user to disable recording of constraints for setup which have intermediate variables not suitable for recording
+    '''
     def __init__(self, cfg: DictConfig,
                  domain: Domain):
         super(Solver_NoRecordConstraints, self).__init__(cfg,domain)
@@ -40,7 +44,8 @@ class Solver_NoRecordConstraints(Solver):
 # base class for solver
 class Solver_ReduceLROnPlateauLoss(Solver):
     """
-    Base solver class for solving single domain.
+    This class is adapted from NVIDIAModulus v22.09 solver.Solver
+    to allow the use of pytorch ReduceLROnPlateauLoss
 
     Parameters
     ----------
