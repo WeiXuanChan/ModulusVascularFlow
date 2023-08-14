@@ -43,11 +43,17 @@ from .layers import inheritedFCLayer, singleInputInheritedFCLayer, cosSinLayer ,
 
 ###FUNCTIONS frequently used
 def getTN(layersizes):
+    '''
+    Function to calculate the number of weights and bias inside a fully connected network
+    '''
     count=0
     for n in range(len(layersizes)-1):
         count+=(layersizes[n]+1)*layersizes[n+1]
     return count
 def createKey(keystr,startnumber,endnumber):
+    '''
+    Function to create Key List with running ID
+    '''
     result=[]
     for n in range(startnumber,endnumber):
         result.append(Key(keystr+str(n)))
@@ -55,6 +61,9 @@ def createKey(keystr,startnumber,endnumber):
 
 ###ArchCore
 class AdditionArchCore(nn.Module):
+    '''
+    Addition architecture core
+    '''
     def __init__(
         self
     ) -> None:
@@ -62,6 +71,9 @@ class AdditionArchCore(nn.Module):
     def forward(self, x: Tensor,o: Tensor) -> Tensor:
         return x+o
 class SubtractionArchCore(nn.Module):
+    '''
+    Subtraction architecture core
+    '''
     def __init__(
         self
     ) -> None:
@@ -69,6 +81,9 @@ class SubtractionArchCore(nn.Module):
     def forward(self, x: Tensor,o: Tensor) -> Tensor:
         return x-o
 class MultiplicationArchCore(nn.Module):
+    '''
+    Element multiplication architecture core
+    '''
     def __init__(
         self
     ) -> None:
@@ -76,6 +91,9 @@ class MultiplicationArchCore(nn.Module):
     def forward(self, x: Tensor,o: Tensor) -> Tensor:
         return x*o
 class MatrixMultiplicationArchCore(nn.Module):
+    '''
+    Matrix multiplication (operates on the last two dimension only) architecture core
+    '''
     def __init__(
         self
     ) -> None:
@@ -83,6 +101,9 @@ class MatrixMultiplicationArchCore(nn.Module):
     def forward(self, x: Tensor,o: Tensor) -> Tensor:
         return torch.matmul(x,o)
 class SumMultiplicationArchCore(nn.Module):
+    '''
+    Linear layer architecture core with summation of element multiplication
+    '''
     def __init__(
         self
     ) -> None:
@@ -90,6 +111,9 @@ class SumMultiplicationArchCore(nn.Module):
     def forward(self, x: Tensor,o: Tensor) -> Tensor:
         return torch.sum(x*o,-1,keepdim=True)
 class CaseIDArchCore(nn.Module):
+    '''
+    Architecture core to output case Identification matrix which tag each sample point to a case index
+    '''
     def __init__(
         self,
         case_num: int,
@@ -106,6 +130,9 @@ class CaseIDArchCore(nn.Module):
         caseID_unit=self.unit_function(caseID.expand((-1,self.caseID_range.size(-1)))-self.caseID_range)#training_points,case_num
         return caseID_unit
 class ParametricInsertArchCore(nn.Module):
+    '''
+    Architecture core to output trainable variables
+    '''
     def __init__(
         self,
         out_features: int = 512,
@@ -127,6 +154,9 @@ class ParametricInsertArchCore(nn.Module):
             self.out_features
         )
 class CosSinArchCore(nn.Module):
+    '''
+    Sine and Cosine architecture core which performs sin or cosine operation to inputs
+    '''
     def __init__(
         self,
         in_features: int = 512,
@@ -177,6 +207,9 @@ class CosSinArchCore(nn.Module):
         x = self.final_layer(x)
         return x
 class BackgroundGraphNNFullyConnectedFlexiLayerSizeArchCore(nn.Module):
+    '''
+    Fully connected architecture core with background GNN convolution
+    '''
     def __init__(
         self,
         in_features: int = 512,
@@ -246,6 +279,9 @@ class BackgroundGraphNNFullyConnectedFlexiLayerSizeArchCore(nn.Module):
         x = self.final_layer(x)
         return x
 class BackgroundGNNAdjacencyArchCore(nn.Module):
+    '''
+    Architecture core to calculate edge weight for background GNN into adjacency matrix
+    '''
     def __init__(
         self,
         dist_upper_limit: float,
@@ -264,6 +300,9 @@ class BackgroundGNNAdjacencyArchCore(nn.Module):
     def forward(self,x: Tensor, bg_GNN_coordinates:Tensor) -> Tensor:
         return self.activation_fn[0](torch.nn.functional.relu(1.-torch.cdist(x, bg_GNN_coordinates, p=self.p_norm)/self.dist_upper_limit))
 def BackgroundGNN_NormalizeAdjacencyNumpy(unnormalized_sampleadjacency,unnormalized_bgadjacency,bgweight=None):
+    '''
+    Numpy version to normalize background GNN Adjacency matrix
+    '''
     if bgweight is None:
         one_plus_sum_col=1.+np.sum(unnormalized_sampleadjacency,axis=-1,keepdims=True)#m,1
         D_col=1./np.sqrt(one_plus_sum_col*(unnormalized_sampleadjacency+np.sum(unnormalized_bgadjacency,axis=-2,keepdims=True)))#m,n
@@ -274,6 +313,9 @@ def BackgroundGNN_NormalizeAdjacencyNumpy(unnormalized_sampleadjacency,unnormali
         D_col=unnormalized_sampleadjacency*np.sqrt(bgweight)/np.sqrt(one_plus_sum_col*(unnormalized_sampleadjacency+np.sum(unnormalized_bgadjacency,axis=-2,keepdims=True)))#m,n
         return np.concatenate((np.zeros_like(one_plus_sum_col)+(1.-bgweight),D_col),axis=-1)
 class BackgroundGNN_NormalizeAdjacencyArchCore(nn.Module):
+    '''
+    Architecture core to normalize background GNN Adjacency matrix
+    '''
     def __init__(
         self,
         bgweight=None,
@@ -296,6 +338,9 @@ class BackgroundGNN_NormalizeAdjacencyArchCore(nn.Module):
             D_col=unnormalized_sampleadjacency*torch.sqrt(self.bgweight)/torch.sqrt(one_plus_sum_col*(unnormalized_sampleadjacency+torch.sum(unnormalized_bgadjacency,dim=-2,keepdim=True)))#m,n
             return torch.cat(((1.-self.bgweight).expand(D_col.size(0),1),D_col),dim=-1)
 class FBWindowCore(nn.Module):
+    '''
+    Architecture core to calculate finite basis window
+    '''
     def __init__(
         self,
         start,
@@ -329,6 +374,9 @@ class FBWindowCore(nn.Module):
                 y=y*y_all[...,n:n+1]
         return y
 class FBLevelDivide(nn.Module):
+    '''
+    Architecture core to normalize of Finite Basis levels
+    '''
     def __init__(
         self,
         nlevel,
@@ -339,6 +387,9 @@ class FBLevelDivide(nn.Module):
     def forward(self,x):
         return x/self.nlevel
 class FullyConnectedFlexiLayerSizeArchCore(nn.Module):
+    '''
+    Architecture core for fully connected neural network with different number of nodes per layer
+    '''
     def __init__(
         self,
         in_features: int = 512,
@@ -419,6 +470,10 @@ class FullyConnectedFlexiLayerSizeArchCore(nn.Module):
         ]
         return weights, biases
 class FullyConnectedFlexiLayerSizeFBWindowArchCore(nn.Module):
+    '''
+    Architecture core for fully connected neural network with different number of nodes per layer.
+    Output multiplied by the window fuction.
+    '''
     def __init__(
         self,
         startList: List[Union[float]],
@@ -465,6 +520,10 @@ class FullyConnectedFlexiLayerSizeFBWindowArchCore(nn.Module):
         return y
             
 class InheritedFullyConnectedFlexiLayerSizeArchCore(nn.Module):
+    '''
+    Architecture core for fully connected neural network with different number of nodes per layer.
+    This architecture allows weights and bias to be input as secondary input in dual input
+    '''
     def __init__(
         self,
         in_features: int = 512,
@@ -595,6 +654,10 @@ class InheritedFullyConnectedFlexiLayerSizeArchCore(nn.Module):
         x = self.final_layer(x,o[...,self.domainNN_cumulative_size[-2]:self.domainNN_cumulative_size[-1]])
         return x.view((-1,)+x.size()[2:x.dim()])
 class SingleInputInheritedFullyConnectedFlexiLayerSizeArchCore(InheritedFullyConnectedFlexiLayerSizeArchCore):
+    '''
+    Architecture core for fully connected neural network with different number of nodes per layer.
+    Both Hyoernetwork and domain network combined into a single class
+    '''
     def __init__(
         self,
         in_features: int = 512,
@@ -670,6 +733,9 @@ class SingleInputInheritedFullyConnectedFlexiLayerSizeArchCore(InheritedFullyCon
         domain_inputs = self.final_layer(domain_inputs,weights_case,bias_case)
         return domain_inputs.squeeze(-2)
 class PointNetMaxPoolArchCore(nn.Module):
+    '''
+    Architecture core for pointnet with max pool function
+    '''
     def __init__(
         self,
         in_features: int = 512,
@@ -685,6 +751,9 @@ class PointNetMaxPoolArchCore(nn.Module):
         case_max, max_indices=torch.max(torch.transpose(caseID_unit,-1,-2).unsqueeze(-1)*x[...,0:self.in_features].unsqueeze(0),-2)#case_num,features
         return torch.matmul(caseID_unit,case_max)
 class MaxPoolArchCore(nn.Module):
+    '''
+    Architecture core for max pool function
+    '''
     def __init__(
         self,
         pooldim: int = 1,
@@ -701,6 +770,9 @@ class MaxPoolArchCore(nn.Module):
             input_max=input_max.expand(x.size())
         return input_max
 class MaxFeatureIndicesArchCore(nn.Module):
+    '''
+    Architecture core for extracting max pool point index
+    '''
     def __init__(
         self,
         pooldim: int = 1,
@@ -715,6 +787,9 @@ class MaxFeatureIndicesArchCore(nn.Module):
         indices=torch.flatten(torch.cat((max_indices,min_indices),dim=1))
         return indices
 class MinPoolArchCore(nn.Module):
+    '''
+    Architecture core for min pool function
+    '''
     def __init__(
         self,
         pooldim: int = 1,
@@ -731,6 +806,9 @@ class MinPoolArchCore(nn.Module):
             input_min=input_min.expand(x.size())
         return input_min
 class MeanPoolArchCore(nn.Module):
+    '''
+    Architecture core for mean pool function
+    '''
     def __init__(
         self,
         pooldim: int = 1,
@@ -747,6 +825,9 @@ class MeanPoolArchCore(nn.Module):
             input_mean=input_mean.expand(x.size())
         return input_mean
 class SumPoolArchCore(nn.Module):
+    '''
+    Architecture core for sum pool function
+    '''
     def __init__(
         self,
         pooldim: int = 1,
@@ -763,6 +844,9 @@ class SumPoolArchCore(nn.Module):
             input_mean=input_mean.expand(x.size())
         return input_mean
 class HypernetFullyConnectedFlexiLayerSizeArchCore(nn.Module):
+    '''
+    Architecture core Hypernetwork
+    '''
     def __init__(
         self,
         in_features: int = 512,
@@ -846,6 +930,9 @@ class HypernetFullyConnectedFlexiLayerSizeArchCore(nn.Module):
         return case_inputs
 
 class CaseIDtoFeatureArchCore(nn.Module):
+    '''
+    Architecture core to store feature array based on case index
+    '''
     def __init__(
         self,
         feature_array
@@ -867,6 +954,9 @@ class CaseIDtoFeatureArchCore(nn.Module):
             self.out_features
         )
 class FixedFeatureArchCore(nn.Module):
+    '''
+    Architecture core to store feature array
+    '''
     def __init__(
         self,
         feature_array
