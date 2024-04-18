@@ -52,7 +52,7 @@ from modulus.geometry.parameterization import Parameterization, Parameter
 class HLine(Geometry):
     """
     This class is adapted from NVIDIAModulus v22.09 geometry.Vline
-    2D Line parallel to y-axis
+    2D Line parallel to x-axis
 
     Parameters
     ----------
@@ -104,6 +104,80 @@ class HLine(Geometry):
         )
 
         # initialize Line
+        super().__init__(
+            curves,
+            _sympy_sdf_to_sdf(sdf),
+            dims=2,
+            bounds=bounds,
+            parameterization=parameterization,
+        )
+class Channel2D_centerfocused(Geometry):
+    """
+    2D Channel (no bounding curves in x-direction)
+
+    Parameters
+    ----------
+    point_1 : tuple with 2 ints or floats
+        lower bound point of channel
+    point_2 : tuple with 2 ints or floats
+        upper bound point of channel
+    parameterization : Parameterization
+        Parameterization of geometry.
+    """
+
+    def __init__(self, point_1, point_2, parameterization=Parameterization()):
+        # make sympy symbols to use
+        l = Symbol(csg_curve_naming(0))
+        x = Symbol("x")
+        y = Symbol("y")
+
+        # curves for each side
+        curve_parameterization = Parameterization({l: (0, 1)})
+        curve_parameterization = Parameterization.combine(
+            curve_parameterization, parameterization
+        )
+        dist_x = point_2[0] - point_1[0]
+        dist_y = point_2[1] - point_1[1]
+        line_1 = SympyCurve(
+            functions={
+                "x": l * dist_x + point_1[0],
+                "y": point_1[1],
+                "normal_x": 0,
+                "normal_y": -1,
+            },
+            parameterization=curve_parameterization,
+            area=dist_x,
+        )
+        line_2 = SympyCurve(
+            functions={
+                "x": l * dist_x + point_1[0],
+                "y": point_2[1],
+                "normal_x": 0,
+                "normal_y": 1,
+            },
+            parameterization=curve_parameterization,
+            area=dist_x,
+        )
+        curves = [line_1, line_2]
+
+        # calculate SDF
+        center_y = point_1[1] + (dist_y) / 2
+        center_x = point_1[0] + (dist_x) / 2
+        y_diff = Abs(y - center_y) - (point_2[1] - center_y)
+        outside_distance = sqrt(Max(y_diff, 0) ** 2)
+        inside_distance = Min(y_diff, 0)
+        sdf = -(outside_distance + inside_distance)*(0.2+0.8*exp(-12.5*((x-center_x)/dist_x)**2.))#sigma=0.02
+
+        # calculate bounds
+        bounds = Bounds(
+            {
+                Parameter("x"): (point_1[0], point_2[0]),
+                Parameter("y"): (point_1[1], point_2[1]),
+            },
+            parameterization=parameterization,
+        )
+
+        # initialize Channel2D
         super().__init__(
             curves,
             _sympy_sdf_to_sdf(sdf),

@@ -11,6 +11,27 @@ from modulus.node import Node
 from typing import Optional, Callable, List, Dict, Union, Tuple
 from modulus.key import Key
 import torch
+
+class ParabolicInlet(PDE):
+    def __init__(self, r_ref,l_ref,umax):
+        # coordinates
+        dissq = Symbol("dissq")
+        
+        # make input variables
+
+        # make u function
+        u = Symbol("u")
+        
+
+        # source term
+        umax=Number(umax)
+        
+        # set equations
+        self.equations = {}
+        self.equations["parabolic_inlet"] = (
+            u- umax*dissq
+        )  # "custom_pde" key name will be used in constraints
+        
 class NavierStokes_CoordTransformed(PDE):
     """
     This class is adapted from NVIDIAModulus v22.09 pde.NavierStokes
