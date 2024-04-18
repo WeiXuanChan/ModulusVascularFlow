@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ModulusVascularFlow"
-version = "1.0.0"
+version = "1.0.3"
 description = "Codes extention from NVIDIA Modulus."
 readme = "README.md"
 authors = [{ name = "Wei Xuan Chan", email = "w.x.chan1986@gmail.com" }]
