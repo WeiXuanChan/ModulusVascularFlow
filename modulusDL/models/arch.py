@@ -39,7 +39,8 @@ from torch import Tensor
 
 from modulus.models.layers import Activation, FCLayer, Conv1dFCLayer, get_activation_fn
 from modulus.models.arch import Arch
-from .layers import inheritedFCLayer, singleInputInheritedFCLayer, cosSinLayer , cosLayer , sinLayer
+from modulus.models.fully_connected import FullyConnectedArchCore
+from .layers import inheritedFCLayer, singleInputInheritedFCLayer, cosSinLayer , cosLayer , sinLayer , PILayer
 
 ###FUNCTIONS frequently used
 def getTN(layersizes):
@@ -58,7 +59,62 @@ def createKey(keystr,startnumber,endnumber):
     for n in range(startnumber,endnumber):
         result.append(Key(keystr+str(n)))
     return result
-
+###WeightsGen
+class InheritedFullyConnectedWeightsGen(nn.Module):
+    '''
+    Architecture core for fully connected neural network with different number of nodes per layer.
+    This architecture allows weights and bias to be input as secondary input in dual input
+    '''
+    def __init__(
+        self,
+        in_features: int = 512,
+        layer_sizeList: Union[int,List[int]] = 512,
+        bias: bool = True,
+        weight_norm: bool = True,
+        additional_pre_dimension=(1,),
+    ) -> None:
+        super().__init__()
+        self.in_features=in_features
+        if isinstance(layer_sizeList,int):
+            layer_sizeList=[layer_sizeList]
+        weights=[]
+        for n in range(np.prod(additional_pre_dimension)):
+            temp_tensor=torch.empty((layer_sizeList[0],in_features))
+            nn.init.xavier_uniform_(temp_tensor)
+            temp_weight = temp_tensor.clone().detach()
+            #temp_weight=torch.tensor(temp_tensor)
+            if bias:
+                temp_tensor=torch.empty((layer_sizeList[0],1))
+                nn.init.constant_(temp_tensor, 0)
+                temp_weight=torch.cat((temp_weight,temp_tensor),-1)
+            if weight_norm:
+                temp_tensor=torch.empty((layer_sizeList[0],1))
+                nn.init.constant_(temp_tensor, 1)
+                temp_weight=torch.cat((temp_weight,temp_tensor),-1)
+            flatten_weights=temp_weight.reshape(-1)
+            for n in range(1,len(layer_sizeList)):
+                temp_tensor=torch.empty((layer_sizeList[n],layer_sizeList[n-1]))
+                nn.init.xavier_uniform_(temp_tensor)
+                temp_weight = temp_tensor.clone().detach()
+                # temp_weight=torch.tensor(temp_tensor)
+                if bias:
+                    temp_tensor=torch.empty((layer_sizeList[n],1))
+                    nn.init.constant_(temp_tensor, 0)
+                    temp_weight=torch.cat((temp_weight,temp_tensor),-1)
+                if weight_norm and n<(len(layer_sizeList)-1): ## len
+                    temp_tensor=torch.empty((layer_sizeList[n],1))
+                    nn.init.constant_(temp_tensor, 1)
+                    temp_weight=torch.cat((temp_weight,temp_tensor),-1)
+                flatten_weights=torch.cat((flatten_weights,temp_weight.reshape(-1),torch.tensor([0]))) ## tensor[0]
+            weights.append(flatten_weights)
+        stacked_weights = torch.stack(weights, dim=0) # list to tensor
+        #domainNN_size_torch = torch.tensor(domainNN_size,dtype=torch.long)
+        #self.register_buffer("domainNN_size", domainNN_size_torch, persistent=False)
+        self.weight_g = nn.Parameter(stacked_weights.reshape(additional_pre_dimension+(-1,))) ## tensor weight
+        self.size=int(self.weight_g.size(-1))
+    def forward(self) -> Tensor:
+        return self.weight_g
+    
 ###ArchCore
 class AdditionArchCore(nn.Module):
     '''
@@ -127,7 +183,7 @@ class CaseIDArchCore(nn.Module):
             self.unit_function=Unit_function.apply
     def forward(self, x: Tensor) -> Tensor:
         caseID=x.detach()
-        caseID_unit=self.unit_function(caseID.expand((-1,self.caseID_range.size(-1)))-self.caseID_range)#training_points,case_num
+        caseID_unit=self.unit_function(caseID.expand((*caseID.size()[:-1],self.caseID_range.size(-1)))-self.caseID_range)#training_points,case_num
         return caseID_unit
 class ParametricInsertArchCore(nn.Module):
     '''
@@ -469,6 +525,83 @@ class FullyConnectedFlexiLayerSizeArchCore(nn.Module):
             self.final_layer.conv.bias
         ]
         return weights, biases
+def PInetgetTN(in_features,layer_size,out_features,nr_layers,layer_size_reduction):
+    layer_sizeList=[layer_size]
+    submod_number=[layer_size_reduction]
+    layer_trainable=[getTN([layer_size,out_features])]
+    for n in range(nr_layers):
+        layer_sizeList.append(int(layer_sizeList[-1]/layer_size_reduction))
+        layer_trainable.append(getTN([layer_sizeList[-1],layer_sizeList[-2]])*submod_number[-1])
+        submod_number.append(int(submod_number[-1]*layer_size_reduction))
+    layer_trainable.append(getTN([in_features,layer_sizeList[-1]])*submod_number[-1])
+    return sum(layer_trainable)
+    
+class PIConnectedArchCore(nn.Module):
+    def __init__(
+        self,
+        in_features: int = 512,
+        layer_size: int = 512,
+        out_features: int = 512,
+        nr_layers: int = 6,
+        layer_size_reduction: int = 2,
+        activation_fn: Activation = Activation.IDENTITY,
+        skip_activation: int = -1,
+        adaptive_activations: bool = False,
+        weight_norm: bool = True,
+        reducenorm:float = 0.2
+
+    ) -> None:
+        super().__init__()
+
+        if adaptive_activations:
+            activation_par = nn.Parameter(torch.ones(1))
+        else:
+            activation_par = None
+        #calculate size of each layer
+        layer_sizeList=[layer_size]
+        submod_number=[layer_size_reduction]
+        for n in range(nr_layers):
+            layer_sizeList.append(int(layer_sizeList[-1]/layer_size_reduction))
+            submod_number.append(int(submod_number[-1]*layer_size_reduction))
+        layer_sizeList=layer_sizeList[::-1]
+        submod_number=submod_number[::-1]
+        temp_layers = []
+        for m in range(submod_number[0]):
+            temp_layers.append(FCLayer(in_features,
+                                    layer_sizeList[0],
+                                    activation_fn=activation_fn,
+                                    weight_norm=weight_norm,
+                                    activation_par=activation_par))
+        skip_activation_count=1
+        for n in range(1,nr_layers+1):
+            new_layers = []
+            if skip_activation_count==skip_activation:
+                skip_activation_count=0
+                activation_fn_temp=Activation.IDENTITY
+            else:
+                skip_activation_count+=1
+                activation_fn_temp=activation_fn
+            for m in range(submod_number[n]):
+                new_layers.append(PILayer(layer_sizeList[n-1],
+                                           layer_sizeList[n],
+                                           temp_layers[int(layer_size_reduction*m):int(layer_size_reduction*(m+1))],
+                                           activation_fn=activation_fn_temp,
+                                           weight_norm = weight_norm,
+                                           activation_par = activation_par,
+                                           reducenorm=reducenorm))
+            temp_layers=new_layers
+        self.layers= nn.ModuleList()
+        self.layers.append(PILayer(layer_size,
+                                    out_features,
+                                    temp_layers,
+                                    activation_fn=Activation.IDENTITY,
+                                    weight_norm = weight_norm,
+                                    activation_par = activation_par,
+                                    reducenorm=reducenorm))
+    def forward(self, x: Tensor) -> Tensor:
+        x = self.layers[0](x)
+        return x
+
 class FullyConnectedFlexiLayerSizeFBWindowArchCore(nn.Module):
     '''
     Architecture core for fully connected neural network with different number of nodes per layer.
@@ -519,7 +652,7 @@ class FullyConnectedFlexiLayerSizeFBWindowArchCore(nn.Module):
             y=y+self.FCNmoduleList[i](x)*self.window_moduleList[i](o)
         return y
             
-class InheritedFullyConnectedFlexiLayerSizeArchCore(nn.Module):
+class InheritedFullyConnectedFlexiLayerSizeCombinedArchCore(nn.Module):
     '''
     Architecture core for fully connected neural network with different number of nodes per layer.
     This architecture allows weights and bias to be input as secondary input in dual input
@@ -652,8 +785,95 @@ class InheritedFullyConnectedFlexiLayerSizeArchCore(nn.Module):
                     x_skip = x
 
         x = self.final_layer(x,o[...,self.domainNN_cumulative_size[-2]:self.domainNN_cumulative_size[-1]])
-        return x.view((-1,)+x.size()[2:x.dim()])
-class SingleInputInheritedFullyConnectedFlexiLayerSizeArchCore(InheritedFullyConnectedFlexiLayerSizeArchCore):
+        return x.view((-1,)+x.size()[2:x.dim()])           
+class InheritedFullyConnectedFlexiLayerSizeArchCore(nn.Module):
+    '''
+    Architecture core for fully connected neural network with different number of nodes per layer.
+    This architecture allows weights and bias to be input as secondary input in dual input
+    '''
+    def __init__(
+        self,
+        in_features: int = 512,
+        layer_sizeList: Union[int,List[int]] = 512,
+        skip_connections: bool = False,
+        activation_fn: Activation = Activation.SILU,
+        bias: bool = True,
+        weight_norm: bool = True,
+    ) -> None:
+        super().__init__()
+        self.in_features=in_features
+        self.skip_connections = skip_connections
+        if isinstance(layer_sizeList,int):
+            layer_sizeList=[layer_sizeList]
+        nr_layers=len(layer_sizeList)-1
+        domainNN_size=[0]
+        domainNN_weight_size=[in_features*layer_sizeList[0]]
+        if bias:
+            domainNN_bias_size=[layer_sizeList[0]]
+        else:
+            domainNN_bias_size=[0]
+        if weight_norm:
+            domainNN_weightsNorm_size=[layer_sizeList[0]]
+        else:
+            domainNN_weightsNorm_size=[0]
+        domainNN_size.append(domainNN_weight_size[-1]+domainNN_bias_size[-1]+domainNN_weightsNorm_size[-1])
+        for n in range(1,len(layer_sizeList)):
+            domainNN_weight_size.append(layer_sizeList[n-1]*layer_sizeList[n])
+            if bias:
+                domainNN_bias_size.append(layer_sizeList[n])
+            else:
+                domainNN_bias_size.append(0)
+            if weight_norm and n<(len(layer_sizeList)-1):
+                domainNN_weightsNorm_size.append(layer_sizeList[n])
+            else:
+                domainNN_weightsNorm_size.append(0)
+            domainNN_size.append(domainNN_weight_size[-1]+domainNN_bias_size[-1]+domainNN_weightsNorm_size[-1])
+        self.domainNN_cumulative_size=list(np.cumsum(domainNN_size))
+        #domainNN_size_torch = torch.tensor(domainNN_size,dtype=torch.long)
+        #self.register_buffer("domainNN_size", domainNN_size_torch, persistent=False)
+        
+        if not isinstance(activation_fn, list):
+            activation_fn = [activation_fn] * nr_layers
+        if len(activation_fn) < nr_layers:
+            activation_fn = activation_fn + [activation_fn[-1]] * (
+                nr_layers - len(activation_fn)
+            )
+        self.layers = nn.ModuleList()
+        layer_in_features = in_features
+        for i in range(nr_layers):
+            self.layers.append(
+                inheritedFCLayer(
+                    layer_in_features,
+                    layer_sizeList[i],
+                    activation_fn[i],
+                    bias=bias,
+                    weight_norm=weight_norm,
+                )
+            )
+            layer_in_features = layer_sizeList[i]
+        self.final_layer = inheritedFCLayer(
+            in_features=layer_in_features,
+            out_features=layer_sizeList[-1],
+            activation_fn=Activation.IDENTITY,
+            bias=bias,
+            weight_norm=False,
+        )
+        self.addsize=bias+weight_norm
+        self.final_addsize=bias+0
+    def forward(self, x: Tensor,o: Tensor) -> Tensor:
+        x_skip: Optional[Tensor] = None
+        x=x.unsqueeze(-1)
+        for i, layer in enumerate(self.layers):
+            # x = layer(x,o[...,self.domainNN_cumulative_size[i]:self.domainNN_cumulative_size[i+1]].reshape(o.size()[:-1]+[-1]+x.size(-1)))
+            x = layer(x, o[..., self.domainNN_cumulative_size[i]:self.domainNN_cumulative_size[i+1]].reshape(o.size()[:-1] + (-1,) + (x.size(-2)+self.addsize,)))
+            if self.skip_connections and i % 2 == 0:
+                if x_skip is not None:
+                    x, x_skip = x + x_skip, x
+                else:
+                    x_skip = x
+        x = self.final_layer(x,o[...,self.domainNN_cumulative_size[-2]:self.domainNN_cumulative_size[-1]].reshape(o.size()[:-1] + (-1,) + (x.size(-2)+self.final_addsize,)))#.reshape(o.size()[:-1]+[-1]+x.size(-1)))
+        return x.squeeze(-1)
+class SingleInputInheritedFullyConnectedFlexiLayerSizeCombinedArchCore(InheritedFullyConnectedFlexiLayerSizeCombinedArchCore):
     '''
     Architecture core for fully connected neural network with different number of nodes per layer.
     Both Hyoernetwork and domain network combined into a single class
@@ -750,6 +970,753 @@ class PointNetMaxPoolArchCore(nn.Module):
         caseID_unit=self.CaseIDArch[0](caseID)#training_points,case_num
         case_max, max_indices=torch.max(torch.transpose(caseID_unit,-1,-2).unsqueeze(-1)*x[...,0:self.in_features].unsqueeze(0),-2)#case_num,features
         return torch.matmul(caseID_unit,case_max)
+class InvertibleFullyConnectedArchCore(nn.Module):
+    '''
+    Architecture core for invertible fully connected neural network with different number of nodes per layer
+    following DOI: arXiv:1808.04730
+    '''
+    def __init__(
+        self,
+        in_features: int = 512,
+        nr_layers: int = 6,
+        activation_fn: Activation = Activation.TANH,
+        hidden_layersize: int = 512,
+        hidden_layers: int = 6,
+        hidden_activation_fn: Activation = Activation.SILU,
+        skip_connections: bool = False,
+        adaptive_activations: bool = False,
+        weight_norm: bool = True,
+        rotate:int=1,
+        reducescale=0.01,
+        scaleend=1.0
+    ) -> None:
+        super().__init__()
+
+        # Allows for regular linear layers to be swapped for 1D Convs
+        # Useful for channel operations in FNO/Transformers
+        self.s1 = nn.ModuleList()
+        self.s2 = nn.ModuleList()
+        self.t1 = nn.ModuleList()
+        self.t2 = nn.ModuleList()
+
+        for i in range(nr_layers+1):
+            features1=int(in_features/2)
+            features2=in_features-features1
+            self.s2.append(
+                FullyConnectedArchCore(
+                    in_features=features2,
+                    layer_size=hidden_layersize,
+                    out_features=features1,
+                    nr_layers=hidden_layers,
+                    skip_connections=skip_connections,
+                    activation_fn=hidden_activation_fn,
+                    adaptive_activations=adaptive_activations,
+                    weight_norm=weight_norm,
+                )
+            )
+            self.t2.append(
+                FullyConnectedArchCore(
+                    in_features=features2,
+                    layer_size=hidden_layersize,
+                    out_features=features1,
+                    nr_layers=hidden_layers,
+                    skip_connections=skip_connections,
+                    activation_fn=hidden_activation_fn,
+                    adaptive_activations=adaptive_activations,
+                    weight_norm=weight_norm,
+                )
+            )
+            self.s1.append(
+                FullyConnectedArchCore(
+                    in_features=features1,
+                    layer_size=hidden_layersize,
+                    out_features=features2,
+                    nr_layers=hidden_layers,
+                    skip_connections=skip_connections,
+                    activation_fn=hidden_activation_fn,
+                    adaptive_activations=adaptive_activations,
+                    weight_norm=weight_norm,
+                )
+            )
+            self.t1.append(
+                FullyConnectedArchCore(
+                    in_features=features1,
+                    layer_size=hidden_layersize,
+                    out_features=features2,
+                    nr_layers=hidden_layers,
+                    skip_connections=skip_connections,
+                    activation_fn=hidden_activation_fn,
+                    adaptive_activations=adaptive_activations,
+                    weight_norm=weight_norm,
+                )
+            )
+        self.nr_layers=nr_layers
+        self.initsplit=int(in_features/2)
+        self.rotate=rotate
+        self.activation1_fn=get_activation_fn(activation_fn,out_features=features2)
+        self.activation2_fn=get_activation_fn(activation_fn,out_features=features1)
+        self.reducescale=reducescale
+        self.scaleend=scaleend
+    def forward(self, x: Tensor) -> Tensor:
+        x1=x[...,:self.initsplit]
+        x2=x[...,self.initsplit:]
+        for i in range(self.nr_layers):
+            x1 = x1*torch.exp(self.activation2_fn(self.s2[i](x2)*self.reducescale))+self.t2[i](x2)*self.reducescale
+            x2 = x2*torch.exp(self.activation1_fn(self.s1[i](x1)*self.reducescale))+self.t1[i](x1)*self.reducescale
+            if self.rotate > 0:
+                x1_temp=torch.cat((x1[...,self.rotate:],x2[...,:self.rotate]),-1)
+                x2=torch.cat((x2[...,self.rotate:],x1[...,:self.rotate]),-1)
+                x1=x1_temp
+        x1 = x1*torch.exp(self.activation2_fn(self.s2[-1](x2)*self.reducescale))*self.scaleend+self.t2[-1](x2)*self.reducescale
+        x2 = x2*torch.exp(self.activation1_fn(self.s1[-1](x1)*self.reducescale))*self.scaleend+self.t1[-1](x1)*self.reducescale
+        return torch.cat((x1,x2),-1)
+    def reverse(self, x: Tensor) -> Tensor:
+        x1=x[...,:self.initsplit]
+        x2=x[...,self.initsplit:]
+        x2 = (x2-self.t1[-1](x1)*self.reducescale)/self.scaleend*torch.exp(-self.activation1_fn(self.s1[-1](x1)*self.reducescale))
+        x1 = (x1-self.t2[-1](x2)*self.reducescale)/self.scaleend*torch.exp(-self.activation2_fn(self.s2[-1](x2)*self.reducescale))
+        if self.rotate > 0:
+            x1_temp=torch.cat((x2[...,-self.rotate:],x1[...,:-self.rotate]),-1)
+            x2=torch.cat((x1[...,-self.rotate:],x2[...,:-self.rotate]),-1)
+            x1=x1_temp
+        for i in range(1,self.nr_layers):
+            x2 = (x2-self.t1[-i-1](x1)*self.reducescale)*torch.exp(-self.activation1_fn(self.s1[-i-1](x1)*self.reducescale))
+            x1 = (x1-self.t2[-i-1](x2)*self.reducescale)*torch.exp(-self.activation2_fn(self.s2[-i-1](x2)*self.reducescale))
+            if self.rotate > 0:
+                x1_temp=torch.cat((x2[...,-self.rotate:],x1[...,:-self.rotate]),-1)
+                x2=torch.cat((x1[...,-self.rotate:],x2[...,:-self.rotate]),-1)
+                x1=x1_temp
+        x2 = (x2-self.t1[0](x1)*self.reducescale)*torch.exp(-self.activation1_fn(self.s1[0](x1)*self.reducescale))
+        x1 = (x1-self.t2[0](x2)*self.reducescale)*torch.exp(-self.activation2_fn(self.s2[0](x2)*self.reducescale))
+        return torch.cat((x1,x2),-1)
+class InheritedInvertibleFullyConnectedArchCore(nn.Module):
+    '''
+    Architecture core for invertible fully connected neural network with different number of nodes per layer
+    following DOI: arXiv:1808.04730
+    '''
+    def __init__(
+        self,
+        in_features: int = 512,
+        nr_layers: int = 6,
+        activation_fn: Activation = Activation.TANH,
+        hidden_layersize: int = 512,
+        hidden_layers: int = 6,
+        hidden_activation_fn: Activation = Activation.SILU,
+        skip_connections: bool = False,
+        adaptive_activations: bool = False,
+        weight_norm: bool = True,
+        rotate:int=1,
+        reducescale=0.01,
+        scaleend=1.0,
+        extras=0
+    ) -> None:
+        super().__init__()
+
+        # Allows for regular linear layers to be swapped for 1D Convs
+        # Useful for channel operations in FNO/Transformers
+        self.s1 = nn.ModuleList()
+        self.s2 = nn.ModuleList()
+        self.t1 = nn.ModuleList()
+        self.t2 = nn.ModuleList()
+
+        for i in range(nr_layers+1):
+            features1=int(in_features/2)
+            features2=in_features-features1
+            self.s2.append(
+                InheritedFullyConnectedFlexiLayerSizeArchCore(
+                    in_features=features2+extras,
+                    layer_sizeList=[hidden_layersize]*hidden_layers+[features1],
+                    skip_connections=skip_connections,
+                    activation_fn=hidden_activation_fn,
+                    weight_norm=weight_norm,
+                )
+            )
+            self.t2.append(
+                InheritedFullyConnectedFlexiLayerSizeArchCore(
+                    in_features=features2+extras,
+                    layer_sizeList=[hidden_layersize]*hidden_layers+[features1],
+                    skip_connections=skip_connections,
+                    activation_fn=hidden_activation_fn,
+                    weight_norm=weight_norm,
+                )
+            )
+            self.s1.append(
+                InheritedFullyConnectedFlexiLayerSizeArchCore(
+                    in_features=features1+extras,
+                    layer_sizeList=[hidden_layersize]*hidden_layers+[features2],
+                    skip_connections=skip_connections,
+                    activation_fn=hidden_activation_fn,
+                    weight_norm=weight_norm,
+                )
+            )
+            self.t1.append(
+                InheritedFullyConnectedFlexiLayerSizeArchCore(
+                    in_features=features1+extras,
+                    layer_sizeList=[hidden_layersize]*hidden_layers+[features2],
+                    skip_connections=skip_connections,
+                    activation_fn=hidden_activation_fn,
+                    weight_norm=weight_norm,
+                )
+            )
+            
+        self.nr_layers=nr_layers
+        self.initsplit=int(in_features/2)
+        self.rotate=rotate
+        self.activation1_fn=get_activation_fn(activation_fn,out_features=features2)
+        self.activation2_fn=get_activation_fn(activation_fn,out_features=features1)
+        self.reducescale=reducescale
+        self.scaleend=scaleend
+        self.extras=extras
+    def forward(self, x: Tensor, w_1:Tensor,w_2:Tensor) -> Tensor:
+        #w_1[w_s1,w_t1]
+        if self.extras>0:
+            x1=x[...,:self.initsplit]
+            x2=x[...,self.initsplit:-self.extras]
+            extra=x[...,-self.extras:]
+        else:
+            x1=x[...,:self.initsplit]
+            x2=x[...,self.initsplit:]
+            extra=x[...,:0]
+        for i in range(self.nr_layers):
+            x2e=torch.cat((x2,extra),-1)
+            x1 = x1*torch.exp(self.activation2_fn(self.s2[i](x2e,w_2[0,i])*self.reducescale))+self.t2[i](x2e,w_2[1,i])*self.reducescale
+            x1e=torch.cat((x1,extra),-1)
+            x2 = x2*torch.exp(self.activation1_fn(self.s1[i](x1e,w_1[0,i])*self.reducescale))+self.t1[i](x1e,w_1[1,i])*self.reducescale
+            if self.rotate > 0:
+                x1_temp=torch.cat((x1[...,self.rotate:],x2[...,:self.rotate]),-1)
+                x2=torch.cat((x2[...,self.rotate:],x1[...,:self.rotate]),-1)
+                x1=x1_temp
+        x2e=torch.cat((x2,extra),-1)
+        x1 = x1*torch.exp(self.activation2_fn(self.s2[-1](x2e,w_2[0,-1])*self.reducescale))*self.scaleend+self.t2[-1](x2e,w_2[1,-1])*self.reducescale
+        x1e=torch.cat((x1,extra),-1)
+        x2 = x2*torch.exp(self.activation1_fn(self.s1[-1](x1e,w_1[0,-1])*self.reducescale))*self.scaleend+self.t1[-1](x1e,w_1[1,-1])*self.reducescale
+        return torch.cat((x1,x2),-1)
+    def reverse(self, x: Tensor, w_1:Tensor,w_2:Tensor) -> Tensor:
+        if self.extras>0:
+            x1=x[...,:self.initsplit]
+            x2=x[...,self.initsplit:-self.extras]
+            extra=x[...,-self.extras:]
+        else:
+            x1=x[...,:self.initsplit]
+            x2=x[...,self.initsplit:]
+            extra=x[...,:0]
+        x1e=torch.cat((x1,extra),-1)
+        x2 = (x2-self.t1[-1](x1e,w_1[1,-1])*self.reducescale)/self.scaleend*torch.exp(-self.activation1_fn(self.s1[-1](x1e,w_1[0,-1])*self.reducescale))
+        x2e=torch.cat((x2,extra),-1)
+        x1 = (x1-self.t2[-1](x2e,w_2[1,-1])*self.reducescale)/self.scaleend*torch.exp(-self.activation2_fn(self.s2[-1](x2e,w_2[0,-1])*self.reducescale))
+        if self.rotate > 0:
+            x1_temp=torch.cat((x2[...,-self.rotate:],x1[...,:-self.rotate]),-1)
+            x2=torch.cat((x1[...,-self.rotate:],x2[...,:-self.rotate]),-1)
+            x1=x1_temp
+        for i in range(1,self.nr_layers):
+            x1e=torch.cat((x1,extra),-1)
+            x2 = (x2-self.t1[-i-1](x1e,w_1[1,-i-1])*self.reducescale)*torch.exp(-self.activation1_fn(self.s1[-i-1](x1e,w_1[0,-i-1])*self.reducescale))
+            x2e=torch.cat((x2,extra),-1)
+            x1 = (x1-self.t2[-i-1](x2e,w_2[1,-i-1])*self.reducescale)*torch.exp(-self.activation2_fn(self.s2[-i-1](x2e,w_2[0,-i-1])*self.reducescale))
+            if self.rotate > 0:
+                x1_temp=torch.cat((x2[...,-self.rotate:],x1[...,:-self.rotate]),-1)
+                x2=torch.cat((x1[...,-self.rotate:],x2[...,:-self.rotate]),-1)
+                x1=x1_temp
+        x1e=torch.cat((x1,extra),-1)
+        x2 = (x2-self.t1[0](x1e,w_1[1,0])*self.reducescale)*torch.exp(-self.activation1_fn(self.s1[0](x1e,w_1[0,0])*self.reducescale))
+        x2e=torch.cat((x2,extra),-1)
+        x1 = (x1-self.t2[0](x2e,w_2[1,0])*self.reducescale)*torch.exp(-self.activation2_fn(self.s2[0](x2e,w_2[0,0])*self.reducescale))
+        return torch.cat((x1,x2),-1)
+class InvertibleExtrasFullyConnectedArchCore(nn.Module):
+    '''
+    Architecture core for invertible fully connected neural network with different number of nodes per layer
+    following DOI: arXiv:1808.04730
+    '''
+    def __init__(
+        self,
+        in_features: int = 512,
+        nr_layers: int = 6,
+        activation_fn: Activation = Activation.TANH,
+        hidden_layersize: int = 512,
+        hidden_layers: int = 6,
+        hidden_activation_fn: Activation = Activation.SILU,
+        skip_connections: bool = False,
+        adaptive_activations: bool = False,
+        weight_norm: bool = True,
+        rotate:int=1,
+        reducescale=0.01,
+        extras=1
+    ) -> None:
+        super().__init__()
+
+        # Allows for regular linear layers to be swapped for 1D Convs
+        # Useful for channel operations in FNO/Transformers
+        self.s1 = nn.ModuleList()
+        self.s2 = nn.ModuleList()
+        self.t1 = nn.ModuleList()
+        self.t2 = nn.ModuleList()
+
+        for i in range(nr_layers+1):
+            features1=int(in_features/2)
+            features2=in_features-features1
+            self.s2.append(
+                FullyConnectedArchCore(
+                    in_features=features2+extras,
+                    layer_size=hidden_layersize,
+                    out_features=features1,
+                    nr_layers=hidden_layers,
+                    skip_connections=skip_connections,
+                    activation_fn=hidden_activation_fn,
+                    adaptive_activations=adaptive_activations,
+                    weight_norm=weight_norm,
+                )
+            )
+            self.t2.append(
+                FullyConnectedArchCore(
+                    in_features=features2+extras,
+                    layer_size=hidden_layersize,
+                    out_features=features1,
+                    nr_layers=hidden_layers,
+                    skip_connections=skip_connections,
+                    activation_fn=hidden_activation_fn,
+                    adaptive_activations=adaptive_activations,
+                    weight_norm=weight_norm,
+                )
+            )
+            self.s1.append(
+                FullyConnectedArchCore(
+                    in_features=features1+extras,
+                    layer_size=hidden_layersize,
+                    out_features=features2,
+                    nr_layers=hidden_layers,
+                    skip_connections=skip_connections,
+                    activation_fn=hidden_activation_fn,
+                    adaptive_activations=adaptive_activations,
+                    weight_norm=weight_norm,
+                )
+            )
+            self.t1.append(
+                FullyConnectedArchCore(
+                    in_features=features1+extras,
+                    layer_size=hidden_layersize,
+                    out_features=features2,
+                    nr_layers=hidden_layers,
+                    skip_connections=skip_connections,
+                    activation_fn=hidden_activation_fn,
+                    adaptive_activations=adaptive_activations,
+                    weight_norm=weight_norm,
+                )
+            )
+        self.nr_layers=nr_layers
+        self.initsplit=int(in_features/2)
+        self.rotate=rotate
+        self.activation1_fn=get_activation_fn(activation_fn,out_features=features2)
+        self.activation2_fn=get_activation_fn(activation_fn,out_features=features1)
+        self.reducescale=reducescale
+    def forward(self, x: Tensor,o: Tensor) -> Tensor:
+        x1=x[...,:self.initsplit]
+        x2=x[...,self.initsplit:]
+        for i in range(self.nr_layers):
+            x1 = x1*torch.exp(self.activation2_fn(self.s2[i](torch.cat((x2,o),-1))*self.reducescale))+self.t2[i](torch.cat((x2,o),-1))*self.reducescale
+            x2 = x2*torch.exp(self.activation1_fn(self.s1[i](torch.cat((x1,o),-1))*self.reducescale))+self.t1[i](torch.cat((x1,o),-1))*self.reducescale
+            if self.rotate > 0:
+                x1_temp=torch.cat((x1[...,self.rotate:],x2[...,:self.rotate]),-1)
+                x2=torch.cat((x2[...,self.rotate:],x1[...,:self.rotate]),-1)
+                x1=x1_temp
+        x1 = x1*torch.exp(self.activation2_fn(self.s2[-1](torch.cat((x2,o),-1))*self.reducescale))+self.t2[-1](torch.cat((x2,o),-1))*self.reducescale
+        x2 = x2*torch.exp(self.activation1_fn(self.s1[-1](torch.cat((x1,o),-1))*self.reducescale))+self.t1[-1](torch.cat((x1,o),-1))*self.reducescale
+        return torch.cat((x1,x2),-1)
+    def reverse(self, x: Tensor,o: Tensor) -> Tensor:
+        x1=x[...,:self.initsplit]
+        x2=x[...,self.initsplit:]
+        for i in range(self.nr_layers):
+            x2 = (x2-self.t1[-i-1](torch.cat((x1,o),-1))*self.reducescale)*torch.exp(-self.activation1_fn(self.s1[-i-1](torch.cat((x1,o),-1))*self.reducescale))
+            x1 = (x1-self.t2[-i-1](torch.cat((x2,o),-1))*self.reducescale)*torch.exp(-self.activation2_fn(self.s2[-i-1](torch.cat((x2,o),-1))*self.reducescale))
+            if self.rotate > 0:
+                x1_temp=torch.cat((x2[...,-self.rotate:],x1[...,:-self.rotate]),-1)
+                x2=torch.cat((x1[...,-self.rotate:],x2[...,:-self.rotate]),-1)
+                x1=x1_temp
+        x2 = (x2-self.t1[0](torch.cat((x1,o),-1))*self.reducescale)*torch.exp(-self.activation1_fn(self.s1[0](torch.cat((x1,o),-1))*self.reducescale))
+        x1 = (x1-self.t2[0](torch.cat((x2,o),-1))*self.reducescale)*torch.exp(-self.activation2_fn(self.s2[0](torch.cat((x2,o),-1))*self.reducescale))
+        return torch.cat((x1,x2),-1)
+class Fixed0FourierApply(nn.Module):
+    '''
+    Architecture core for invertible fully connected neural network with different number of nodes per layer
+    following DOI: arXiv:1808.04730
+    '''
+    def __init__(
+        self,
+        varNumber,
+        omega=1.,
+        FourierNumber=4,
+    ) -> None:
+        super().__init__()
+        self.varNumber=varNumber
+        torchrangeomega=torch.tensor(omega*np.repeat(np.arange(1,FourierNumber+1),varNumber).reshape((1,-1)),dtype=torch.float)
+        self.register_buffer("torchrangeomega", torchrangeomega, persistent=False)
+        self.Nfourier=int(FourierNumber)
+        self.Nfourier2=int(FourierNumber*2)
+    def forward(self,x,o):#Fcossin1, o:deltaT
+        a0radian=o*self.torchrangeomega
+        a0_uvw=(torch.cat((torch.cos(a0radian),torch.sin(a0radian)),dim=-1)*x).reshape(x.size(0),self.Nfourier2,self.varNumber).sum(dim=-2)
+        fwd_uvw=x[...,:self.Nfourier*self.varNumber].reshape(x.size(0),self.Nfourier,self.varNumber).sum(dim=-2)
+        return a0_uvw-fwd_uvw
+class Fixed0FourierInvertibleFullyConnectedArchCore(nn.Module):
+    '''
+    Architecture core for invertible fully connected neural network with different number of nodes per layer
+    following DOI: arXiv:1808.04730
+    '''
+    def __init__(
+        self,
+        in_features: int = 512,
+        nr_layers: int = 6,
+        activation_fn: Activation = Activation.TANH,
+        hidden_layersize: int = 512,
+        hidden_layers: int = 6,
+        hidden_activation_fn: Activation = Activation.SILU,
+        skip_connections: bool = False,
+        adaptive_activations: bool = False,
+        weight_norm: bool = True,
+        rotate:int=1,
+        reducescale=0.01,
+        omega=1.,
+        FourierNumber=4,
+    ) -> None:
+        super().__init__()
+
+        # Allows for regular linear layers to be swapped for 1D Convs
+        # Useful for channel operations in FNO/Transformers
+        features1=int(in_features/2)
+        features2=in_features-features1
+        self.Fixed0Fourier1=Fixed0FourierApply(features2,omega,FourierNumber)
+        self.Fixed0Fourier2=Fixed0FourierApply(features1,omega,FourierNumber)
+        self.s1 = nn.ModuleList()
+        self.s2 = nn.ModuleList()
+        self.t1 = nn.ModuleList()
+        self.t2 = nn.ModuleList()
+        for i in range(nr_layers+1):
+            self.s2.append(
+                FullyConnectedFlexiLayerSizeArchCore(
+                    in_features=features2+2,
+                    layer_sizeList=[hidden_layersize]*hidden_layers+[features1*FourierNumber*2],
+                    skip_connections=skip_connections,
+                    activation_fn=hidden_activation_fn,
+                    weight_norm=weight_norm,
+                )
+            )
+            self.t2.append(
+                FullyConnectedFlexiLayerSizeArchCore(
+                    in_features=features2+2,
+                    layer_sizeList=[hidden_layersize]*hidden_layers+[features1*FourierNumber*2],
+                    skip_connections=skip_connections,
+                    activation_fn=hidden_activation_fn,
+                    weight_norm=weight_norm,
+                )
+            )
+            self.s1.append(
+                FullyConnectedFlexiLayerSizeArchCore(
+                    in_features=features1+2,
+                    layer_sizeList=[hidden_layersize]*hidden_layers+[features2*FourierNumber*2],
+                    skip_connections=skip_connections,
+                    activation_fn=hidden_activation_fn,
+                    weight_norm=weight_norm,
+                )
+            )
+            self.t1.append(
+                FullyConnectedFlexiLayerSizeArchCore(
+                    in_features=features1+2,
+                    layer_sizeList=[hidden_layersize]*hidden_layers+[features2*FourierNumber*2],
+                    skip_connections=skip_connections,
+                    activation_fn=hidden_activation_fn,
+                    weight_norm=weight_norm,
+                )
+            )
+        self.nr_layers=nr_layers
+        self.initsplit=int(in_features/2)
+        self.rotate=rotate
+        self.activation1_fn=get_activation_fn(activation_fn,out_features=features2)
+        self.activation2_fn=get_activation_fn(activation_fn,out_features=features1)
+        self.reducescale=reducescale
+        omega=torch.tensor(omega,dtype=torch.float)
+        self.register_buffer("omega", omega, persistent=False)
+    def forward(self, x: Tensor,o: Tensor) -> Tensor: #o:t,deltaT
+        x1=x[...,:self.initsplit]
+        x2=x[...,self.initsplit:]
+        sint=torch.sin(self.omega*o[...,0:1])
+        cost=torch.cos(self.omega*o[...,0:1])
+        for i in range(self.nr_layers):
+            x1 = x1*torch.exp(self.Fixed0Fourier2(self.activation2_fn(self.s2[i](torch.cat((x2,sint,cost),-1))*self.reducescale),o[...,1:2]))+self.Fixed0Fourier2(self.t2[i](torch.cat((x2,sint,cost),-1))*self.reducescale,o[...,1:2])
+            x2 = x2*torch.exp(self.Fixed0Fourier1(self.activation1_fn(self.s1[i](torch.cat((x1,sint,cost),-1))*self.reducescale),o[...,1:2]))+self.Fixed0Fourier1(self.t1[i](torch.cat((x1,sint,cost),-1))*self.reducescale,o[...,1:2])
+            if self.rotate > 0:
+                x1_temp=torch.cat((x1[...,self.rotate:],x2[...,:self.rotate]),-1)
+                x2=torch.cat((x2[...,self.rotate:],x1[...,:self.rotate]),-1)
+                x1=x1_temp
+        x1 = x1*torch.exp(self.Fixed0Fourier2(self.activation2_fn(self.s2[-1](torch.cat((x2,sint,cost),-1))*self.reducescale),o[...,1:2]))+self.Fixed0Fourier2(self.t2[-1](torch.cat((x2,sint,cost),-1))*self.reducescale,o[...,1:2])
+        x2 = x2*torch.exp(self.Fixed0Fourier1(self.activation1_fn(self.s1[-1](torch.cat((x1,sint,cost),-1))*self.reducescale),o[...,1:2]))+self.Fixed0Fourier1(self.t1[-1](torch.cat((x1,sint,cost),-1))*self.reducescale,o[...,1:2])
+        return torch.cat((x1,x2),-1)
+    def reverse(self, x: Tensor,o: Tensor) -> Tensor:
+        x1=x[...,:self.initsplit]
+        x2=x[...,self.initsplit:]
+        sint=torch.sin(self.omega*o[...,0:1])
+        cost=torch.cos(self.omega*o[...,0:1])
+        for i in range(self.nr_layers):
+            x2 = (x2-self.Fixed0Fourier1(self.t1[-i-1](torch.cat((x1,sint,cost),-1))*self.reducescale,o[...,1:2]))*torch.exp(-self.Fixed0Fourier1(self.activation1_fn(self.s1[-i-1](torch.cat((x1,sint,cost),-1))*self.reducescale),o[...,1:2]))
+            x1 = (x1-self.Fixed0Fourier2(self.t2[-i-1](torch.cat((x2,sint,cost),-1))*self.reducescale,o[...,1:2]))*torch.exp(-self.Fixed0Fourier2(self.activation2_fn(self.s2[-i-1](torch.cat((x2,sint,cost),-1))*self.reducescale),o[...,1:2]))
+            if self.rotate > 0:
+                x1_temp=torch.cat((x2[...,-self.rotate:],x1[...,:-self.rotate]),-1)
+                x2=torch.cat((x1[...,-self.rotate:],x2[...,:-self.rotate]),-1)
+                x1=x1_temp
+        x2 = (x2-self.Fixed0Fourier1(self.t1[0](torch.cat((x1,sint,cost),-1))*self.reducescale,o[...,1:2]))*torch.exp(-self.Fixed0Fourier1(self.activation1_fn(self.s1[0](torch.cat((x1,sint,cost),-1))*self.reducescale),o[...,1:2]))
+        x1 = (x1-self.Fixed0Fourier2(self.t2[0](torch.cat((x2,sint,cost),-1))*self.reducescale,o[...,1:2]))*torch.exp(-self.Fixed0Fourier2(self.activation2_fn(self.s2[0](torch.cat((x2,sint,cost),-1))*self.reducescale),o[...,1:2]))
+        return torch.cat((x1,x2),-1)
+class FourierInvertibleFullyConnectedArchCore(nn.Module):
+    '''
+    Architecture core for invertible fully connected neural network with different number of nodes per layer
+    following DOI: arXiv:1808.04730
+    '''
+    def __init__(
+        self,
+        in_features: int = 512,
+        nr_layers: int = 6,
+        activation_fn: Activation = Activation.TANH,
+        hidden_layersize: int = 512,
+        hidden_layers: int = 6,
+        hidden_activation_fn: Activation = Activation.SILU,
+        skip_connections: bool = False,
+        adaptive_activations: bool = False,
+        weight_norm: bool = True,
+        rotate:int=1,
+        reducescale=0.01,
+        omega=1.,
+    ) -> None:
+        super().__init__()
+
+        # Allows for regular linear layers to be swapped for 1D Convs
+        # Useful for channel operations in FNO/Transformers
+        features1=int(in_features/2)
+        features2=in_features-features1
+        omega=torch.tensor(omega,dtype=torch.float)
+        self.register_buffer("omega", omega, persistent=False)
+        self.s1 = nn.ModuleList()
+        self.s2 = nn.ModuleList()
+        self.t1 = nn.ModuleList()
+        self.t2 = nn.ModuleList()
+        for i in range(nr_layers+1):
+            self.s2.append(
+                FullyConnectedFlexiLayerSizeArchCore(
+                    in_features=features2+2,
+                    layer_sizeList=[hidden_layersize]*hidden_layers+[features1],
+                    skip_connections=skip_connections,
+                    activation_fn=hidden_activation_fn,
+                    weight_norm=weight_norm,
+                )
+            )
+            self.t2.append(
+                FullyConnectedFlexiLayerSizeArchCore(
+                    in_features=features2+2,
+                    layer_sizeList=[hidden_layersize]*hidden_layers+[features1],
+                    skip_connections=skip_connections,
+                    activation_fn=hidden_activation_fn,
+                    weight_norm=weight_norm,
+                )
+            )
+            self.s1.append(
+                FullyConnectedFlexiLayerSizeArchCore(
+                    in_features=features1+2,
+                    layer_sizeList=[hidden_layersize]*hidden_layers+[features2],
+                    skip_connections=skip_connections,
+                    activation_fn=hidden_activation_fn,
+                    weight_norm=weight_norm,
+                )
+            )
+            self.t1.append(
+                FullyConnectedFlexiLayerSizeArchCore(
+                    in_features=features1+2,
+                    layer_sizeList=[hidden_layersize]*hidden_layers+[features2],
+                    skip_connections=skip_connections,
+                    activation_fn=hidden_activation_fn,
+                    weight_norm=weight_norm,
+                )
+            )
+        self.nr_layers=nr_layers
+        self.initsplit=int(in_features/2)
+        self.rotate=rotate
+        self.activation1_fn=get_activation_fn(activation_fn,out_features=features2)
+        self.activation2_fn=get_activation_fn(activation_fn,out_features=features1)
+        self.reducescale=reducescale
+    def forward(self, x: Tensor,o: Tensor) -> Tensor: #o:t
+        x1=x[...,:self.initsplit]
+        x2=x[...,self.initsplit:]
+        sint=torch.sin(self.omega*o[...,0:1])
+        cost=torch.cos(self.omega*o[...,0:1])
+        for i in range(self.nr_layers):
+            x1 = x1*torch.exp(self.activation2_fn(self.s2[i](torch.cat((x2,sint,cost),-1))*self.reducescale))+self.t2[i](torch.cat((x2,sint,cost),-1))*self.reducescale
+            x2 = x2*torch.exp(self.activation1_fn(self.s1[i](torch.cat((x1,sint,cost),-1))*self.reducescale))+self.t1[i](torch.cat((x1,sint,cost),-1))*self.reducescale
+            if self.rotate > 0:
+                x1_temp=torch.cat((x1[...,self.rotate:],x2[...,:self.rotate]),-1)
+                x2=torch.cat((x2[...,self.rotate:],x1[...,:self.rotate]),-1)
+                x1=x1_temp
+        x1 = x1*torch.exp(self.activation2_fn(self.s2[-1](torch.cat((x2,sint,cost),-1))*self.reducescale))+self.t2[-1](torch.cat((x2,sint,cost),-1))*self.reducescale
+        x2 = x2*torch.exp(self.activation1_fn(self.s1[-1](torch.cat((x1,sint,cost),-1))*self.reducescale))+self.t1[-1](torch.cat((x1,sint,cost),-1))*self.reducescale
+        return torch.cat((x1,x2),-1)
+    def reverse(self, x: Tensor,o: Tensor) -> Tensor:
+        x1=x[...,:self.initsplit]
+        x2=x[...,self.initsplit:]
+        sint=torch.sin(self.omega*o[...,0:1])
+        cost=torch.cos(self.omega*o[...,0:1])
+        for i in range(self.nr_layers):
+            x2 = (x2-self.t1[-i-1](torch.cat((x1,sint,cost),-1))*self.reducescale)*torch.exp(-self.activation1_fn(self.s1[-i-1](torch.cat((x1,sint,cost),-1))*self.reducescale))
+            x1 = (x1-self.t2[-i-1](torch.cat((x2,sint,cost),-1))*self.reducescale)*torch.exp(-self.activation2_fn(self.s2[-i-1](torch.cat((x2,sint,cost),-1))*self.reducescale))
+            if self.rotate > 0:
+                x1_temp=torch.cat((x2[...,-self.rotate:],x1[...,:-self.rotate]),-1)
+                x2=torch.cat((x1[...,-self.rotate:],x2[...,:-self.rotate]),-1)
+                x1=x1_temp
+        x2 = (x2-self.t1[0](torch.cat((x1,sint,cost),-1))*self.reducescale)*torch.exp(-self.activation1_fn(self.s1[0](torch.cat((x1,sint,cost),-1))*self.reducescale))
+        x1 = (x1-self.t2[0](torch.cat((x2,sint,cost),-1))*self.reducescale)*torch.exp(-self.activation2_fn(self.s2[0](torch.cat((x2,sint,cost),-1))*self.reducescale))
+        return torch.cat((x1,x2),-1)
+class InheritedFixed0FourierInvertibleFullyConnectedArchCore(nn.Module):
+    '''
+    Architecture core for invertible fully connected neural network with different number of nodes per layer
+    following DOI: arXiv:1808.04730
+    '''
+    def __init__(
+        self,
+        in_features: int = 512,
+        nr_layers: int = 6,
+        activation_fn: Activation = Activation.TANH,
+        hidden_layersize: int = 512,
+        hidden_layers: int = 6,
+        hidden_activation_fn: Activation = Activation.SILU,
+        skip_connections: bool = False,
+        adaptive_activations: bool = False,
+        weight_norm: bool = True,
+        rotate:int=1,
+        reducescale=0.01,
+        omega=1.,
+        FourierNumber=4,
+    ) -> None:
+        super().__init__()
+
+        # Allows for regular linear layers to be swapped for 1D Convs
+        # Useful for channel operations in FNO/Transformers
+        features1=int(in_features/2)
+        features2=in_features-features1
+        self.Fixed0Fourier1=Fixed0FourierApply(features2,omega,FourierNumber)
+        self.Fixed0Fourier2=Fixed0FourierApply(features1,omega,FourierNumber)
+        self.s1 = nn.ModuleList()
+        self.s2 = nn.ModuleList()
+        self.t1 = nn.ModuleList()
+        self.t2 = nn.ModuleList()
+        for i in range(nr_layers+1):
+            self.s2.append(
+                InheritedFullyConnectedFlexiLayerSizeArchCore(
+                    in_features=features2+2,
+                    layer_sizeList=[hidden_layersize]*hidden_layers+[features1*FourierNumber*2],
+                    skip_connections=skip_connections,
+                    activation_fn=hidden_activation_fn,
+                    weight_norm=weight_norm,
+                )
+            )
+            self.t2.append(
+                InheritedFullyConnectedFlexiLayerSizeArchCore(
+                    in_features=features2+2,
+                    layer_sizeList=[hidden_layersize]*hidden_layers+[features1*FourierNumber*2],
+                    skip_connections=skip_connections,
+                    activation_fn=hidden_activation_fn,
+                    weight_norm=weight_norm,
+                )
+            )
+            self.s1.append(
+                InheritedFullyConnectedFlexiLayerSizeArchCore(
+                    in_features=features1+2,
+                    layer_sizeList=[hidden_layersize]*hidden_layers+[features2*FourierNumber*2],
+                    skip_connections=skip_connections,
+                    activation_fn=hidden_activation_fn,
+                    weight_norm=weight_norm,
+                )
+            )
+            self.t1.append(
+                InheritedFullyConnectedFlexiLayerSizeArchCore(
+                    in_features=features1+2,
+                    layer_sizeList=[hidden_layersize]*hidden_layers+[features2*FourierNumber*2],
+                    skip_connections=skip_connections,
+                    activation_fn=hidden_activation_fn,
+                    weight_norm=weight_norm,
+                )
+            )
+        self.nr_layers=nr_layers
+        self.initsplit=int(in_features/2)
+        self.rotate=rotate
+        self.activation1_fn=get_activation_fn(activation_fn,out_features=features2)
+        self.activation2_fn=get_activation_fn(activation_fn,out_features=features1)
+        self.reducescale=reducescale
+        omega=torch.tensor(omega,dtype=torch.float)
+        self.register_buffer("omega", omega, persistent=False)
+    def forward(self, x: Tensor,o: Tensor) -> Tensor: #o:t,deltaT
+        x1=x[...,:self.initsplit]
+        x2=x[...,self.initsplit:]
+        sint=torch.sin(self.omega*o[...,0:1])
+        cost=torch.cos(self.omega*o[...,0:1])
+        for i in range(self.nr_layers):
+            x1 = x1*torch.exp(self.Fixed0Fourier2(self.activation2_fn(self.s2[i](torch.cat((x2,sint,cost),-1))*self.reducescale),o[...,1:2]))+self.Fixed0Fourier2(self.t2[i](torch.cat((x2,sint,cost),-1))*self.reducescale,o[...,1:2])
+            x2 = x2*torch.exp(self.Fixed0Fourier1(self.activation1_fn(self.s1[i](torch.cat((x1,sint,cost),-1))*self.reducescale),o[...,1:2]))+self.Fixed0Fourier1(self.t1[i](torch.cat((x1,sint,cost),-1))*self.reducescale,o[...,1:2])
+            if self.rotate > 0:
+                x1_temp=torch.cat((x1[...,self.rotate:],x2[...,:self.rotate]),-1)
+                x2=torch.cat((x2[...,self.rotate:],x1[...,:self.rotate]),-1)
+                x1=x1_temp
+        x1 = x1*torch.exp(self.Fixed0Fourier2(self.activation2_fn(self.s2[-1](torch.cat((x2,sint,cost),-1))*self.reducescale),o[...,1:2]))+self.Fixed0Fourier2(self.t2[-1](torch.cat((x2,sint,cost),-1))*self.reducescale,o[...,1:2])
+        x2 = x2*torch.exp(self.Fixed0Fourier1(self.activation1_fn(self.s1[-1](torch.cat((x1,sint,cost),-1))*self.reducescale),o[...,1:2]))+self.Fixed0Fourier1(self.t1[-1](torch.cat((x1,sint,cost),-1))*self.reducescale,o[...,1:2])
+        return torch.cat((x1,x2),-1)
+    def reverse(self, x: Tensor,o: Tensor,t1weights: Tensor) -> Tensor:##!!inherited not coded
+        x1=x[...,:self.initsplit]
+        x2=x[...,self.initsplit:]
+        sint=torch.sin(self.omega*o[...,0:1])
+        cost=torch.cos(self.omega*o[...,0:1])
+        for i in range(self.nr_layers):
+            x2 = (x2-self.Fixed0Fourier1(self.t1[-i-1](torch.cat((x1,sint,cost),-1))*self.reducescale,o[...,1:2]))*torch.exp(-self.Fixed0Fourier1(self.activation1_fn(self.s1[-i-1](torch.cat((x1,sint,cost),-1))*self.reducescale),o[...,1:2]))
+            x1 = (x1-self.Fixed0Fourier2(self.t2[-i-1](torch.cat((x2,sint,cost),-1))*self.reducescale,o[...,1:2]))*torch.exp(-self.Fixed0Fourier2(self.activation2_fn(self.s2[-i-1](torch.cat((x2,sint,cost),-1))*self.reducescale),o[...,1:2]))
+            if self.rotate > 0:
+                x1_temp=torch.cat((x2[...,-self.rotate:],x1[...,:-self.rotate]),-1)
+                x2=torch.cat((x1[...,-self.rotate:],x2[...,:-self.rotate]),-1)
+                x1=x1_temp
+        x2 = (x2-self.Fixed0Fourier1(self.t1[0](torch.cat((x1,sint,cost),-1))*self.reducescale,o[...,1:2]))*torch.exp(-self.Fixed0Fourier1(self.activation1_fn(self.s1[0](torch.cat((x1,sint,cost),-1))*self.reducescale),o[...,1:2]))
+        x1 = (x1-self.Fixed0Fourier2(self.t2[0](torch.cat((x2,sint,cost),-1))*self.reducescale,o[...,1:2]))*torch.exp(-self.Fixed0Fourier2(self.activation2_fn(self.s2[0](torch.cat((x2,sint,cost),-1))*self.reducescale),o[...,1:2]))
+        return torch.cat((x1,x2),-1)
+class Intensity3DGradientArchCore(nn.Module):
+    '''
+    Architecture core for Intensity3DGradient of image
+    '''
+    def __init__(
+        self,
+        image,
+        extend = 5,
+        multiplier: float=1.#with one it is +ve direction - -ve direction
+    ) -> None:
+        super().__init__()
+        if not(isinstance(extend,list)):
+            extend=[extend,extend,extend]
+        extend=extend[::-1]
+        image=torch.tensor(image[np.newaxis,np.newaxis,...],dtype=torch.float)
+        self.register_buffer("image", image, persistent=False)
+        imageshape=torch.tensor(image.shape,dtype=torch.int)
+        self.register_buffer("imageshape", imageshape, persistent=False)
+        extend=(np.mgrid[(-extend[0]+0.5):extend[0],(-extend[1]+0.5):extend[1],(-extend[2]+0.5):extend[2]].T/np.array(image.shape).reshape((1,1,1,-1))*2.).reshape((1,1,1,-1,3))
+        xplus=(extend[...,0:1]>=0).astype(float)*2.-1.
+        yplus=(extend[...,1:2]>=0).astype(float)*2.-1.
+        zplus=(extend[...,2:3]>=0).astype(float)*2.-1.
+        extend=torch.tensor(extend,dtype=torch.float)
+        self.register_buffer("extend", extend, persistent=False)
+        xplus=torch.tensor(xplus,dtype=torch.float)
+        self.register_buffer("xplus", xplus, persistent=False)
+        yplus=torch.tensor(yplus,dtype=torch.float)
+        self.register_buffer("yplus", xplus, persistent=False)
+        zplus=torch.tensor(zplus,dtype=torch.float)
+        self.register_buffer("zplus", zplus, persistent=False)
+        multiplier=torch.tensor(multiplier,dtype=torch.float)
+        self.register_buffer("multiplier", multiplier, persistent=False)
+    def forward(self, x: Tensor, o: Tensor) -> Tensor:
+        grid=x.unsqueeze(1).unsqueeze(0).unsqueeze(0)+self.extend
+        surrounding=torch.nn.functional.grid_sample(self.image, grid, mode='bilinear', padding_mode='zeros', align_corners=None)
+        surrounding_x=torch.sum(surrounding*self.xplus,dim=(3,4))*self.multiplier
+        surrounding_y=torch.sum(surrounding*self.yplus,dim=(3,4))*self.multiplier
+        surrounding_z=torch.sum(surrounding*self.zplus,dim=(3,4))*self.multiplier
+        xyz_grad=torch.stack([surrounding_x[0,0],surrounding_y[0,0],surrounding_z[0,0]],dim=-1)
+        return xyz_grad*o
 class MaxPoolArchCore(nn.Module):
     '''
     Architecture core for max pool function
@@ -969,6 +1936,38 @@ class FixedFeatureArchCore(nn.Module):
     def forward(self) -> Tensor:
         return self.feature_array
 
+    def extra_repr(self) -> str:
+        return "out_features={}".format(
+            self.out_features
+        )
+def multinomial(sampleweights,samplenumber):
+    x=torch.cumsum(sampleweights,dim=1)
+    x=x/x[:,-1:]
+    
+    return torch.randint(0,sampleweights.size(1),(sampleweights.size(0),samplenumber),device=sampleweights.device)
+class NominalSampledFixedFeatureArchCore(nn.Module):
+    '''
+    Architecture core to store and sample feature array and keep some as a fixed sample
+    '''
+    def __init__(
+        self,
+        feature_array,
+    ) -> None:
+        super().__init__()
+        #assume feature_array has rank3
+        self.out_features=feature_array.shape[-1]
+        self.total_case=feature_array.shape[0]
+        feature_array = torch.tensor(feature_array,dtype=torch.float)##!!!QUICK FIXED
+        self.register_buffer("feature_array", feature_array, persistent=False)
+        fixed_ind=torch.randint(0,self.feature_array.size(1),(self.feature_array.size(0),self.out_features))
+        fixed_ind=torch.cat([torch.index_select(feature_array[row:row+1],1,yind) for row, yind in enumerate(fixed_ind)]).detach()
+        self.register_buffer("fixed_ind", fixed_ind, persistent=True)
+    def forward(self) -> Tensor:
+        return self.fixed_ind
+    def allpts(self):
+        return self.feature_array
+    def updateSampleWeight(self,indfrom_samples):
+        self.fixed_ind=torch.cat([torch.index_select(self.feature_array[row:row+1],1,yind) for row, yind in enumerate(indfrom_samples)]).detach()
     def extra_repr(self) -> str:
         return "out_features={}".format(
             self.out_features
@@ -1926,6 +2925,34 @@ def FullyConnectedFlexiLayerSizeArch(
                                                                         conv_layers=conv_layers
                                                                         )
                             )
+def PIConnectedArch(
+        input_keys: List[Key],
+        output_keys: List[Key],
+        detach_keys: List[Key] = [],
+        layer_size: int = 512,
+        nr_layers: int = 6,
+        layer_size_reduction: int = 2,
+        activation_fn: Activation = Activation.SILU,
+        skip_activation: int = -1,
+        adaptive_activations: bool = False,
+        weight_norm: bool = True,
+        reducenorm: float = 0.2
+    ):
+    return CustomModuleArch(input_keys,
+                            output_keys,
+                            detach_keys,
+                            module=PIConnectedArchCore(in_features = sum([x.size for x in input_keys]),
+                                                        layer_size = layer_size,
+                                                        out_features = sum([x.size for x in output_keys]),
+                                                        nr_layers = nr_layers,
+                                                        layer_size_reduction = layer_size_reduction,
+                                                        activation_fn = activation_fn,
+                                                        skip_activation = skip_activation,
+                                                        adaptive_activations = adaptive_activations,
+                                                        weight_norm = weight_norm,
+                                                        reducenorm=reducenorm,
+                                                        )
+                            )
 def InheritedFullyConnectedFlexiLayerSizeArch(
         input_keys: List[Key],
         output_keys: List[Key],
@@ -1951,7 +2978,7 @@ def InheritedFullyConnectedFlexiLayerSizeArch(
                             case_input_keys,
                             output_keys,
                             detach_keys,
-                            module=InheritedFullyConnectedFlexiLayerSizeArchCore(in_features=sum([x.size for x in input_keys]),
+                            module=InheritedFullyConnectedFlexiLayerSizeCombinedArchCore(in_features=sum([x.size for x in input_keys]),
                                                                         layer_sizeList=layer_sizeList,
                                                                         skip_connections=skip_connections,
                                                                         activation_fn=activation_fn,
@@ -2148,7 +3175,7 @@ def SingleInputInheritedFullyConnectedFlexiLayerSizeArch(
     return CustomModuleArch(input_keys+case_input_keys,
                             output_keys,
                             detach_keys,
-                            module=SingleInputInheritedFullyConnectedFlexiLayerSizeArchCore(in_features=sum([x.size for x in input_keys]),
+                            module=SingleInputInheritedFullyConnectedFlexiLayerSizeCombinedArchCore(in_features=sum([x.size for x in input_keys]),
                                                                         layer_sizeList=layer_sizeList,
                                                                         skip_connections=skip_connections,
                                                                         activation_fn=activation_fn,
