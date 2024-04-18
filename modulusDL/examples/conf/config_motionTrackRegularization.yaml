@@ -1,0 +1,40 @@
+defaults :
+  - modulus_default
+  - arch:
+      - fully_connected
+  - scheduler: tf_exponential_lr
+  - optimizer: adam
+  - loss: sum
+  - _self_
+ 
+scheduler:
+  decay_rate: 0.97
+  decay_steps: 2000
+
+optimizer:
+  lr: 0.001
+training:
+  rec_results_freq : 1000
+  rec_constraint_freq: 10000000
+  rec_validation_freq: 1000000
+  max_steps : 1000000
+
+batch_size:
+  interior: 4000
+  anchor: 1000
+
+custom:
+  CUDA_DEVICE : 2
+  b_coef_file_format : !!null
+  time_point_num : !!null
+  training_folder : TRAINING_SET
+  stlt0 : !!null
+  fileScale : 1.0
+  length_scale_in_mm : 1.
+  num_of_block : 2
+  hidden_layer_per_NN : 2
+  result_nodes : 64
+  input_all : !!null
+  sample_ratio : 5.0
+  volume_anchor_file: !!null
+  smooth_time_file: !!null
