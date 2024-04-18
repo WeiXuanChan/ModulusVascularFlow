@@ -34,10 +34,12 @@ from sympy import (
     Symbol,
     Abs,
     Min,
+    Max,
     sqrt,
     pi,
     sin,
     cos,
+    atan2,
     exp,
 )
 
@@ -109,6 +111,220 @@ class HLine(Geometry):
             bounds=bounds,
             parameterization=parameterization,
         )
+class StraightTube(Geometry):
+    """
+    3D Cylinder Straigtht
+    Axis parallel to z-axis
+
+    Parameters
+    ----------
+    center : tuple with 3 ints or floats
+        center of cylinder
+    radius : int or float
+        radius of cylinder
+    height : int or float
+        height of cylinder
+    parameterization : Parameterization
+        Parameterization of geometry.
+    """
+
+    def __init__(self, center, radius, length,cline_vec=None,ry_vec=None, parameterization=Parameterization(),geom='interior'):#geom=["interior","wall","inlet","outlet"]
+        # make sympy symbols to use
+        x, y, z = Symbol("x"), Symbol("y"), Symbol("z")
+        if cline_vec is None:
+            cline_vec=np.array([1.,0.,0.])
+        cline_vec=cline_vec/np.linalg.norm(cline_vec)
+        if ry_vec is None:
+            if abs(cline_vec[2])<0.9:
+                ry_vec=np.cross(np.array([0.,0.,1.]),cline_vec)
+            else:
+                ry_vec=np.cross(np.array([0.,1.,0.]),cline_vec)
+            ry_vec=ry_vec/np.linalg.norm(ry_vec)
+        rz_vec=np.cross(cline_vec,ry_vec)
+        if geom=='interior':
+            l, r = Symbol(csg_curve_naming(0)), Symbol(csg_curve_naming(1))
+            theta = Symbol(csg_curve_naming(2))
+    
+            # surface of the cylinder
+            curve_parameterization = Parameterization(
+                {l: (-1, 1), r: (0, 1), theta: (0, 2 * pi)}
+            )
+            curve_parameterization = Parameterization.combine(
+                curve_parameterization, parameterization
+            )
+            curve_1 = SympyCurve(
+                functions={
+                    "x": center[0] + 0.5 * l * length *cline_vec[0] + radius * r * sin(theta) *ry_vec[0] + radius * r * cos(theta) *rz_vec[0],
+                    "y": center[1] + 0.5 * l * length *cline_vec[1] + radius * r * sin(theta) *ry_vec[1] + radius * r * cos(theta) *rz_vec[1],
+                    "z": center[2] + 0.5 * l * length *cline_vec[2] + radius * r * sin(theta) *ry_vec[2] + radius * r * cos(theta) *rz_vec[2],
+                    "normal_x": sin(theta)*ry_vec[0] + cos(theta)*rz_vec[0],
+                    "normal_y": sin(theta)*ry_vec[1] + cos(theta)*rz_vec[1],
+                    "normal_z": sin(theta)*ry_vec[2] + cos(theta)*rz_vec[2],
+                },
+                parameterization=curve_parameterization,
+                area=length * pi * radius**2.,
+            )
+            
+            curves = [curve_1]
+    
+            # calculate SDF
+            sdf =  Min(0,radius - sqrt((y*cline_vec[2]-z*cline_vec[1])**2 + (z*cline_vec[0]-x*cline_vec[2])**2 + (x*cline_vec[1]-y*cline_vec[0])**2))
+    
+            # calculate bounds
+            bounds = Bounds(
+                {
+                    Parameter("x"): (center[0] - abs(0.5 *  length *cline_vec[0]) - abs(radius * sin(theta) *ry_vec[0]) - abs(radius * cos(theta) *rz_vec[0]), center[0] + abs(0.5 *  length *cline_vec[0]) + abs(radius * sin(theta) *ry_vec[0]) + abs(radius * cos(theta) *rz_vec[0])),
+                    Parameter("y"): (center[1] - abs(0.5 *  length *cline_vec[1]) - abs(radius * sin(theta) *ry_vec[1]) - abs(radius * cos(theta) *rz_vec[1]), center[1] + abs(0.5 *  length *cline_vec[1]) + abs(radius * sin(theta) *ry_vec[1]) + abs(radius * cos(theta) *rz_vec[1])),
+                    Parameter("z"): (center[2] - abs(0.5 *  length *cline_vec[2]) - abs(radius * sin(theta) *ry_vec[2]) - abs(radius * cos(theta) *rz_vec[2]), center[2] + abs(0.5 *  length *cline_vec[2]) + abs(radius * sin(theta) *ry_vec[2]) + abs(radius * cos(theta) *rz_vec[2])),
+                },
+                parameterization=parameterization,
+            )
+        elif geom=='outlet':
+            r = Symbol(csg_curve_naming(0))
+            theta = Symbol(csg_curve_naming(1))
+    
+            # surface of the cylinder
+            curve_parameterization = Parameterization(
+                {r: (0, 1), theta: (0, 2 * pi)}
+            )
+            curve_parameterization = Parameterization.combine(
+                curve_parameterization, parameterization
+            )
+            if length is None:
+                cir_center=center
+            else:
+                cir_center=[center[0] + 0.5 * length*cline_vec[0],center[1] + 0.5 * length *cline_vec[1],center[2] + 0.5 * length *cline_vec[2]]
+            curve_2 = SympyCurve(
+                functions={
+                    "x": cir_center[0] + sqrt(r) * radius * sin(theta)*ry_vec[0] + sqrt(r) * radius * cos(theta)*rz_vec[0],
+                    "y": cir_center[1] + sqrt(r) * radius * sin(theta)*ry_vec[1] + sqrt(r) * radius * cos(theta)*rz_vec[1],
+                    "z": cir_center[2] + sqrt(r) * radius * sin(theta)*ry_vec[2] + sqrt(r) * radius * cos(theta)*rz_vec[2],
+                    "normal_x": cline_vec[0],
+                    "normal_y": cline_vec[1],
+                    "normal_z": cline_vec[2],
+                },
+                parameterization=curve_parameterization,
+                area=pi * radius**2,
+            )
+            
+            curves = [curve_2]
+    
+            # calculate SDF
+            sdf = (sqrt(cir_center[0]**2.+cir_center[1]**2.+cir_center[2]**2.) - (x*cline_vec[0]+y*cline_vec[1]+z*cline_vec[2]))
+    
+            # calculate bounds
+            bounds = Bounds(
+                {
+                    Parameter("x"): (center[0] + (0.5 *  length *cline_vec[0]) - abs(radius * sin(theta) *ry_vec[0]) - abs(radius * cos(theta) *rz_vec[0]), center[0] + abs(0.5 *  length *cline_vec[0]) + abs(radius * sin(theta) *ry_vec[0]) + abs(radius * cos(theta) *rz_vec[0])),
+                    Parameter("y"): (center[1] + (0.5 *  length *cline_vec[1]) - abs(radius * sin(theta) *ry_vec[1]) - abs(radius * cos(theta) *rz_vec[1]), center[1] + abs(0.5 *  length *cline_vec[1]) + abs(radius * sin(theta) *ry_vec[1]) + abs(radius * cos(theta) *rz_vec[1])),
+                    Parameter("z"): (center[2] + (0.5 *  length *cline_vec[2]) - abs(radius * sin(theta) *ry_vec[2]) - abs(radius * cos(theta) *rz_vec[2]), center[2] + abs(0.5 *  length *cline_vec[2]) + abs(radius * sin(theta) *ry_vec[2]) + abs(radius * cos(theta) *rz_vec[2])),
+                },
+                parameterization=parameterization,
+            )
+        elif geom=='inlet':
+            r = Symbol(csg_curve_naming(0))
+            theta = Symbol(csg_curve_naming(1))
+    
+            # surface of the cylinder
+            curve_parameterization = Parameterization(
+                {r: (0, 1), theta: (0, 2 * pi)}
+            )
+            curve_parameterization = Parameterization.combine(
+                curve_parameterization, parameterization
+            )
+            if length is None:
+                cir_center=center
+            else:
+                cir_center=[center[0] - 0.5 * length*cline_vec[0],center[1] - 0.5 * length *cline_vec[1],center[2] - 0.5 * length *cline_vec[2]]
+            curve_3 = SympyCurve(
+                functions={
+                    "x": cir_center[0] + sqrt(r) * radius * sin(theta)*ry_vec[0] + sqrt(r) * radius * cos(theta)*rz_vec[0],
+                    "y": cir_center[1] + sqrt(r) * radius * sin(theta)*ry_vec[1] + sqrt(r) * radius * cos(theta)*rz_vec[1],
+                    "z": cir_center[2] + sqrt(r) * radius * sin(theta)*ry_vec[2] + sqrt(r) * radius * cos(theta)*rz_vec[2],
+                    "normal_x": -cline_vec[0],
+                    "normal_y": -cline_vec[1],
+                    "normal_z": -cline_vec[2],
+                },
+                parameterization=curve_parameterization,
+                area=pi * radius**2,
+            )
+            curves = [curve_3]
+    
+            # calculate SDF
+            sdf = (sqrt(cir_center[0]**2.+cir_center[1]**2.+cir_center[2]**2.) - (x*cline_vec[0]+y*cline_vec[1]+z*cline_vec[2]))
+    
+            # calculate bounds
+            bounds = Bounds(
+                {
+                    Parameter("x"): (center[0] - (0.5 *  length *cline_vec[0]) - abs(radius * sin(theta) *ry_vec[0]) - abs(radius * cos(theta) *rz_vec[0]), center[0] + abs(0.5 *  length *cline_vec[0]) + abs(radius * sin(theta) *ry_vec[0]) + abs(radius * cos(theta) *rz_vec[0])),
+                    Parameter("y"): (center[1] - (0.5 *  length *cline_vec[1]) - abs(radius * sin(theta) *ry_vec[1]) - abs(radius * cos(theta) *rz_vec[1]), center[1] + abs(0.5 *  length *cline_vec[1]) + abs(radius * sin(theta) *ry_vec[1]) + abs(radius * cos(theta) *rz_vec[1])),
+                    Parameter("z"): (center[2] - (0.5 *  length *cline_vec[2]) - abs(radius * sin(theta) *ry_vec[2]) - abs(radius * cos(theta) *rz_vec[2]), center[2] + abs(0.5 *  length *cline_vec[2]) + abs(radius * sin(theta) *ry_vec[2]) + abs(radius * cos(theta) *rz_vec[2])),
+                },
+                parameterization=parameterization,
+            )
+        elif geom=='wall':
+            l= Symbol(csg_curve_naming(0))
+            theta = Symbol(csg_curve_naming(1))
+    
+            # surface of the cylinder
+            curve_parameterization = Parameterization(
+                {l: (-1, 1), theta: (0, 2 * pi)}
+            )
+            curve_parameterization = Parameterization.combine(
+                curve_parameterization, parameterization
+            )
+            curve_1 = SympyCurve(
+                functions={
+                    "x": center[0] + 0.5 * l * length *cline_vec[0] + radius * sin(theta) *ry_vec[0] + radius * cos(theta) *rz_vec[0],
+                    "y": center[1] + 0.5 * l * length *cline_vec[1] + radius * sin(theta) *ry_vec[1] + radius * cos(theta) *rz_vec[1],
+                    "z": center[2] + 0.5 * l * length *cline_vec[2] + radius * sin(theta) *ry_vec[2] + radius * cos(theta) *rz_vec[2],
+                    "normal_x": sin(theta)*ry_vec[0] + cos(theta)*rz_vec[0],
+                    "normal_y": sin(theta)*ry_vec[1] + cos(theta)*rz_vec[1],
+                    "normal_z": sin(theta)*ry_vec[2] + cos(theta)*rz_vec[2],
+                },
+                parameterization=curve_parameterization,
+                area=length * 2 * pi * radius,
+            )
+            
+            curves = [curve_1]
+    
+            # calculate SDF
+            sdf = Min(0,radius - sqrt((y*cline_vec[2]-z*cline_vec[1])**2 + (z*cline_vec[0]-x*cline_vec[2])**2 + (x*cline_vec[1]-y*cline_vec[0])**2))
+    
+            # calculate bounds
+            bounds = Bounds(
+                {
+                    Parameter("x"): (center[0] - abs(0.5 *  length *cline_vec[0]) - abs(radius * sin(theta) *ry_vec[0]) - abs(radius * cos(theta) *rz_vec[0]), center[0] + abs(0.5 *  length *cline_vec[0]) + abs(radius * sin(theta) *ry_vec[0]) + abs(radius * cos(theta) *rz_vec[0])),
+                    Parameter("y"): (center[1] - abs(0.5 *  length *cline_vec[1]) - abs(radius * sin(theta) *ry_vec[1]) - abs(radius * cos(theta) *rz_vec[1]), center[1] + abs(0.5 *  length *cline_vec[1]) + abs(radius * sin(theta) *ry_vec[1]) + abs(radius * cos(theta) *rz_vec[1])),
+                    Parameter("z"): (center[2] - abs(0.5 *  length *cline_vec[2]) - abs(radius * sin(theta) *ry_vec[2]) - abs(radius * cos(theta) *rz_vec[2]), center[2] + abs(0.5 *  length *cline_vec[2]) + abs(radius * sin(theta) *ry_vec[2]) + abs(radius * cos(theta) *rz_vec[2])),
+                },
+                parameterization=parameterization,
+            )
+        # initialize Cylinder
+        super().__init__(
+            curves,
+            _sympy_sdf_to_sdf(sdf),
+            dims=3,
+            bounds=bounds,
+            parameterization=parameterization,
+        )
+        if geom=='wall':
+            def _boundary_criteria(criteria):
+                def boundary_criteria(invar, params):
+                    return self.boundary_criteria(invar, criteria=criteria, params=params)
+    
+                return boundary_criteria
+    
+            closed_boundary_criteria = _boundary_criteria(None)
+    
+            for curve in self.curves:
+                s, p = curve._sample(
+                nr_points=10000,
+                parameterization=parameterization,
+                quasirandom=False,
+                )
+                computed_criteria = closed_boundary_criteria(s, p)
+                total_area = np.sum(s["area"][computed_criteria[:, 0], :])
 class FlexibleTube(Geometry):
     """
     3D Cylinder
@@ -274,6 +490,652 @@ class FlexibleTube(Geometry):
                 Parameter("x"): (center[0] - length / 2 - radius*(1.+max(default_curve_control["r0"])-min(default_curve_control["rr"])), center[0] + length / 2 + radius*(1.+max(default_curve_control["r0"])+max(default_curve_control["rr"]))),
                 Parameter("y"): (center[1] - radius * ( 1+ np.max(default_curve_control["r0"]) + np.max(default_curve_control["rr"]) + np.max(np.abs(default_curve_control["s1"])) + np.max(np.abs(default_curve_control["s2"]))) , center[1] + radius * ( 1+ np.max(default_curve_control["r0"]) + np.max(default_curve_control["rr"]) + np.max(np.abs(default_curve_control["s1"])) + np.max(np.abs(default_curve_control["s2"])))),
                 Parameter("z"): (center[2] - radius * ( 1+ np.max(default_curve_control["r0"]) + np.max(default_curve_control["rr"]) + np.max(np.abs(default_curve_control["s3"])) + np.max(np.abs(default_curve_control["s4"]))) , center[2] + radius * ( 1+ np.max(default_curve_control["r0"]) + np.max(default_curve_control["rr"]) + np.max(np.abs(default_curve_control["s3"])) + np.max(np.abs(default_curve_control["s4"])))),
+            },
+            parameterization=parameterization,
+        )
+
+        # initialize Cylinder
+        super().__init__(
+            curves,
+            _sympy_sdf_to_sdf(sdf),
+            dims=3,
+            bounds=bounds,
+            parameterization=parameterization,
+        )
+class HeartMyocardium(Geometry):
+    """
+    3D heart Myocardium
+    Longitudinal axis parallel to z-axis
+    base at (0,0,0)
+    apex at (0,0,-longlength)
+    center of  prolate spheroid at (0,0,-center_to_base)
+    radius of prolate spheroid =radius
+
+    Parameters
+    ----------
+    center : tuple with 3 ints or floats
+        center of cylinder
+    radius : int or float
+        radius of cylinder
+    height : int or float
+        height of cylinder
+    parameterization : Parameterization
+        Parameterization of geometry.
+    """
+
+    def __init__(self, longitudinal_length, radius, center_to_base, thickness, parameterization=Parameterization()):
+        # make sympy symbols to use
+        longi, theta, radial,longi_epi = Symbol(csg_curve_naming(0)), Symbol(csg_curve_naming(1)), Symbol(csg_curve_naming(2)), Symbol(csg_curve_naming(3))
+        
+        minor_semi_axis=radius
+        major_semi_axis=longitudinal_length-center_to_base
+        longi_min=-center_to_base/major_semi_axis
+        longi_min_outer=-center_to_base/(major_semi_axis+thickness)
+        # surface of the cylinder
+        curve_parameterization = Parameterization(
+            {longi: (longi_min, 1),longi_epi: (longi_min_outer, 1), theta: (0, 2 * pi), radial:(0,1)}
+        )
+        curve_parameterization = Parameterization.combine(
+            curve_parameterization, parameterization
+        )
+        slice_radius=minor_semi_axis* sqrt(1.-longi**2.)
+        func_x=slice_radius * cos(theta)
+        func_y=slice_radius * sin(theta)
+        func_z=-longi * major_semi_axis
+        outward_normal_x=sqrt(1.-longi**2.)/minor_semi_axis* cos(theta)
+        outward_normal_y=sqrt(1.-longi**2.)/minor_semi_axis* sin(theta)
+        outward_normal_z=-longi/major_semi_axis
+        #outward_normal_z=Min(0.,outward_normal_z)
+        outward_normal_correct=sqrt((1.-longi**2.)/minor_semi_axis**2.+outward_normal_z**2.)
+        outward_normal_x=outward_normal_x/outward_normal_correct
+        outward_normal_y=outward_normal_y/outward_normal_correct
+        outward_normal_z=outward_normal_z/outward_normal_correct
+        curve_1 = SympyCurve(
+            functions={
+                "x": func_x,
+                "y": func_y,
+                "z": -center_to_base +func_z,
+                "normal_x": -outward_normal_x,
+                "normal_y": -outward_normal_y,
+                "normal_z": -outward_normal_z,
+            },
+            parameterization=curve_parameterization,
+            area=np.pi*minor_semi_axis*(np.pi/2.-np.arcsin(longi_min)+longi_min*np.sqrt(1-longi_min**2.)),
+        )
+        outer_slice_radius=(minor_semi_axis+thickness)* sqrt(1.-longi_epi**2.)
+        outer_func_x=slice_radius * cos(theta)
+        outer_func_y=slice_radius * sin(theta)
+        outer_func_z=-longi_epi * (major_semi_axis+thickness)
+        outer_outward_normal_x=sqrt(1.-longi_epi**2.)/(minor_semi_axis+thickness)* cos(theta)
+        outer_outward_normal_y=sqrt(1.-longi_epi**2.)/(minor_semi_axis+thickness)* sin(theta)
+        outer_outward_normal_z=-longi_epi/(major_semi_axis+thickness)
+        #outward_normal_z=Min(0.,outward_normal_z)
+        outer_outward_normal_correct=sqrt((1.-longi_epi**2.)/(major_semi_axis+thickness)**2.+outer_outward_normal_z**2.)
+        outer_outward_normal_x=outer_outward_normal_x/outer_outward_normal_correct
+        outer_outward_normal_y=outer_outward_normal_y/outer_outward_normal_correct
+        outer_outward_normal_z=outer_outward_normal_z/outer_outward_normal_correct
+        curve_2 = SympyCurve(
+            functions={
+                "x": outer_func_x,
+                "y": outer_func_y,
+                "z": -center_to_base +outer_func_z,
+                "normal_x": outer_outward_normal_x,
+                "normal_y": outer_outward_normal_y,
+                "normal_z": outer_outward_normal_z,
+            },
+            parameterization=curve_parameterization,
+            area=np.pi*(minor_semi_axis+thickness)*(np.pi/2.-np.arcsin(longi_min_outer)+longi_min_outer*np.sqrt(1-longi_min_outer**2.)),
+        )
+        curve_3 = SympyCurve(
+            functions={
+                "x": (minor_semi_axis* np.sqrt(1.-longi_min**2.)+thickness*radial)* cos(theta),
+                "y": (minor_semi_axis* np.sqrt(1.-longi_min**2.)+thickness*radial)* sin(theta),
+                "z": 0.,
+                "normal_x": 0.,
+                "normal_y": 0.,
+                "normal_z": 1.,
+            },
+            parameterization=curve_parameterization,
+            area=np.pi*((minor_semi_axis* np.sqrt(1.-longi_min**2.)+thickness)**2.-(minor_semi_axis* np.sqrt(1.-longi_min**2.))**2.),
+        )
+        curves = [curve_1, curve_2, curve_3]
+        
+        x,y,z = Symbol("x"),Symbol("y"),Symbol("z")
+        # calculate SDF
+        toEndo_distance = (x/minor_semi_axis)**2.+(y/minor_semi_axis)**2.+((z+center_to_base)/major_semi_axis)**2.-1.
+        toEpi_distance = 1.-(x/(minor_semi_axis+thickness))**2.+(y/(minor_semi_axis+thickness))**2.+((z+center_to_base)/(major_semi_axis+thickness))**2.
+        base_distance = -z
+        sdf = toEndo_distance*toEpi_distance*Max(0.,base_distance)+Min(0.,base_distance)
+        
+        # calculate bounds
+        bounds = Bounds(
+            {
+                Parameter("x"): (-minor_semi_axis-thickness, minor_semi_axis+thickness),
+                Parameter("y"): (-minor_semi_axis-thickness, minor_semi_axis+thickness),
+                Parameter("z"): (-longitudinal_length-thickness,0.),
+            },
+            parameterization=parameterization,
+        )
+
+        # initialize Cylinder
+        super().__init__(
+            curves,
+            _sympy_sdf_to_sdf(sdf),
+            dims=3,
+            bounds=bounds,
+            parameterization=parameterization,
+        )
+        
+class HeartMyocardium_LCR(Geometry):
+    """
+    ellipsoid HeartMyocardium with thickness added via the surface normal
+
+    Parameters
+    ----------
+    point_1 : tuple with 3 ints or floats
+        lower bound point of box
+    point_2 : tuple with 3 ints or floats
+        upper bound point of box
+    parameterization : Parameterization
+        Parameterization of geometry.
+    """
+
+    def __init__(self,longilength,center_to_base,endoradius,thickness,parameterization=Parameterization(),geom='myocardium'):#geom=["myocardium","endo","epi"]
+        # make sympy symbols to use
+        l,c,r = Symbol("z"), Symbol("y"), Symbol("x")
+        s_l, s_c, s_r = Symbol(csg_curve_naming(0)), Symbol(csg_curve_naming(1)), Symbol(csg_curve_naming(2))
+        circumferential_halflength=np.pi*endoradius
+
+        # surface of the box
+        curve_parameterization = Parameterization({s_l: (0, 1), s_c: (-1, 1), s_r: (0, 1)})
+        curve_parameterization = Parameterization.combine(
+            curve_parameterization, parameterization
+        )
+        major_semiaxis=longilength-center_to_base
+        #base_endoradius=endoradius*np.sqrt(1.-(center_to_base/major_semiaxis)**2.)
+        #centroid_to_base_thru_l=sqrt((endoradius+s_r*thickness)**2.*(1.-(center_to_base/(major_semiaxis+s_r*thickness))**2.)+center_to_base**2.)
+        curve_l0 = SympyCurve(
+            functions={
+                "z": 0.,
+                "y": s_c*circumferential_halflength,
+                "x": 0.,
+                "normal_x": 0,
+                "normal_y": 0,
+                "normal_z": -1,
+            },
+            parameterization=curve_parameterization,
+            area=1.,
+        )
+        curve_r0 = SympyCurve(
+            functions={
+                "z": s_l*longilength,
+                "y": s_c*circumferential_halflength,
+                "x": 0.,
+                "normal_x": -1,
+                "normal_y": 0,
+                "normal_z": 0,
+            },
+            parameterization=curve_parameterization,
+            area=1.,
+        )
+        #epi_longi=center_to_base*thickness/np.sqrt((endoradius+thickness)**2.*(1.-(center_to_base/(major_semiaxis+thickness))**2.)+center_to_base**2.)
+        curve_r1 = SympyCurve(
+            functions={
+                "z": s_l*longilength,
+                "y": s_c*circumferential_halflength,
+                "x": thickness,
+                "normal_x": 1,
+                "normal_y": 0,
+                "normal_z": 0,
+            },
+            parameterization=curve_parameterization,
+            area=1.,
+        )
+        if geom=='base':
+            curves = [curve_l0]
+        elif geom=='endo':
+            curves = [curve_r0]
+        elif geom=='epi':
+            curves = [curve_r1]
+        elif geom=='cirjoint':
+            curve_cirjoint0 = SympyCurve(
+                functions={
+                    "z": s_l*longilength,
+                    "y": -1.*circumferential_halflength,
+                    "x": s_r*thickness,
+                    "normal_x": 0,
+                    "normal_y": -1,
+                    "normal_z": 0,
+                },
+                parameterization=curve_parameterization,
+                area=1.,
+            )
+            curve_cirjoint1 = SympyCurve(
+                functions={
+                    "z": s_l*longilength,
+                    "y": circumferential_halflength,
+                    "x": s_r*thickness,
+                    "normal_x": 0,
+                    "normal_y": -1,
+                    "normal_z": 0,
+                },
+                parameterization=curve_parameterization,
+                area=1.,
+            )
+            curves = [curve_cirjoint0,curve_cirjoint1]
+        elif geom=='myocardium':
+            curve_myocardium = SympyCurve(
+                functions={
+                    "z": s_l*longilength,
+                    "y": s_c*circumferential_halflength,
+                    "x": s_r*thickness,
+                    "normal_x": 0,
+                    "normal_y": 0,
+                    "normal_z": -1,
+                },
+                parameterization=curve_parameterization,
+                area=1.,
+            )
+            curves = [curve_myocardium]
+        elif geom=='myocardium+endo':
+            curve_myocardium = SympyCurve(
+                functions={
+                    "z": s_l*longilength,
+                    "y": s_c*circumferential_halflength,
+                    "x": s_r*thickness,
+                    "normal_x": 0,
+                    "normal_y": 0,
+                    "normal_z": -1,
+                },
+                parameterization=curve_parameterization,
+                area=10.,
+            )
+            curves = [curve_myocardium,curve_r0]
+        else:
+            curves = [curve_l0,curve_r0,curve_r1]
+
+        # calculate SDF
+        l_dist = Abs(l-0.5*longilength) - 0.5 * longilength
+        c_dist = Abs(c) - circumferential_halflength
+        r_dist = Abs(r-0.5*thickness) - 0.5 * thickness
+        outside_distance = sqrt(
+            Max(l_dist, 0) ** 2 + Max(c_dist, 0) ** 2 + Max(r_dist, 0) ** 2
+        )
+        centroid_to_base_thru_l_nocurve=sqrt((endoradius+r)**2.*(1.-(center_to_base/(major_semiaxis+r))**2.)+center_to_base**2.)
+        #inside_distance = Max(center_to_base*r/centroid_to_base_thru_l_nocurve-l, 0)
+        #inside_distance = Min(Max(l_dist, c_dist, r_dist), 0)
+        if geom=='cirjoint':
+            sdf = Abs(c)-circumferential_halflength
+        else:
+            sdf = -outside_distance
+
+        # calculate bounds
+        if geom=='base':
+            bounds = Bounds(
+                {
+                    Parameter("z"): (0., 0.),
+                    Parameter("y"): (-circumferential_halflength, circumferential_halflength),
+                    Parameter("x"): (0, 0.),
+                },
+                parameterization=parameterization,
+            )
+        elif geom=='endo':
+            bounds = Bounds(
+                {
+                    Parameter("z"): (0., longilength),
+                    Parameter("y"): (-circumferential_halflength, circumferential_halflength),
+                    Parameter("x"): (0., 0.),
+                },
+                parameterization=parameterization,
+            )
+        elif geom=='epi':
+            bounds = Bounds(
+                {
+                    Parameter("z"): (0., longilength),
+                    Parameter("y"): (-circumferential_halflength, circumferential_halflength),
+                    Parameter("x"): (thickness, thickness),
+                },
+                parameterization=parameterization,
+            )
+        else:
+            bounds = Bounds(
+                {
+                    Parameter("z"): (0., longilength),
+                    Parameter("y"): (-circumferential_halflength, circumferential_halflength),
+                    Parameter("x"): (0, thickness),
+                },
+                parameterization=parameterization,
+            )
+
+        # initialize Box
+        super().__init__(
+            curves,
+            _sympy_sdf_to_sdf(sdf),
+            dims=3,
+            bounds=bounds,
+            parameterization=parameterization,
+        )
+
+class HeartMyocardium_LCR_approx(Geometry):
+    """
+    ellipsoid Heartmyocardium with thickness added to semi-major and semi-minor axis(thickness is non-constant)
+
+    Parameters
+    ----------
+    point_1 : tuple with 3 ints or floats
+        lower bound point of box
+    point_2 : tuple with 3 ints or floats
+        upper bound point of box
+    parameterization : Parameterization
+        Parameterization of geometry.
+    """
+
+    def __init__(self,longilength,center_to_base,endoradius,thickness,parameterization=Parameterization(),geom='myocardium'):#geom=["myocardium","endo","epi"]
+        # make sympy symbols to use
+        l,c,r = Symbol("z"), Symbol("y"), Symbol("x")
+        s_l, s_c, s_r = Symbol(csg_curve_naming(0)), Symbol(csg_curve_naming(1)), Symbol(csg_curve_naming(2))
+        circumferential_halflength=np.pi*endoradius
+
+        # surface of the box
+        curve_parameterization = Parameterization({s_l: (0, 1), s_c: (-1, 1), s_r: (0, 1)})
+        curve_parameterization = Parameterization.combine(
+            curve_parameterization, parameterization
+        )
+        major_semiaxis=longilength-center_to_base
+        #base_endoradius=endoradius*np.sqrt(1.-(center_to_base/major_semiaxis)**2.)
+        #centroid_to_base_thru_l=sqrt((endoradius+s_r*thickness)**2.*(1.-(center_to_base/(major_semiaxis+s_r*thickness))**2.)+center_to_base**2.)
+        curve_l0 = SympyCurve(
+            functions={
+                "z": 0.,
+                "y": s_c*(circumferential_halflength+np.pi*s_r*thickness),
+                "x": s_r*thickness,
+                "normal_x": 0,
+                "normal_y": 0,
+                "normal_z": -1,
+            },
+            parameterization=curve_parameterization,
+            area=1.,
+        )
+        curve_r0 = SympyCurve(
+            functions={
+                "z": s_l*longilength,
+                "y": s_c*circumferential_halflength,
+                "x": 0.,
+                "normal_x": -1,
+                "normal_y": 0,
+                "normal_z": 0,
+            },
+            parameterization=curve_parameterization,
+            area=1.,
+        )
+        #epi_longi=center_to_base*thickness/np.sqrt((endoradius+thickness)**2.*(1.-(center_to_base/(major_semiaxis+thickness))**2.)+center_to_base**2.)
+        curve_r1 = SympyCurve(
+            functions={
+                "z": s_l*(longilength+thickness),
+                "y": s_c*(circumferential_halflength+np.pi*thickness),
+                "x": thickness,
+                "normal_x": 1,
+                "normal_y": 0,
+                "normal_z": 0,
+            },
+            parameterization=curve_parameterization,
+            area=1.,
+        )
+        if geom=='base':
+            curves = [curve_l0]
+        elif geom=='endo':
+            curves = [curve_r0]
+        elif geom=='epi':
+            curves = [curve_r1]
+        elif geom=='cirjoint':
+            curve_cirjoint0 = SympyCurve(
+                functions={
+                    "z": s_l*(longilength+s_r*thickness),
+                    "y": -1.*(circumferential_halflength+np.pi*s_r*thickness),
+                    "x": s_r*thickness,
+                    "normal_x": 0,
+                    "normal_y": -1,
+                    "normal_z": 0,
+                },
+                parameterization=curve_parameterization,
+                area=1.,
+            )
+            curve_cirjoint1 = SympyCurve(
+                functions={
+                    "z": s_l*(longilength+s_r*thickness),
+                    "y": (circumferential_halflength+np.pi*s_r*thickness),
+                    "x": s_r*thickness,
+                    "normal_x": 0,
+                    "normal_y": -1,
+                    "normal_z": 0,
+                },
+                parameterization=curve_parameterization,
+                area=1.,
+            )
+            curves = [curve_cirjoint0,curve_cirjoint1]
+        elif geom=='myocardium':
+            curve_myocardium = SympyCurve(
+                functions={
+                    "z": s_l*(longilength+s_r*thickness),
+                    "y": s_c*(circumferential_halflength+np.pi*s_r*thickness),
+                    "x": s_r*thickness,
+                    "normal_x": 0,
+                    "normal_y": 0,
+                    "normal_z": -1,
+                },
+                parameterization=curve_parameterization,
+                area=1.,
+            )
+            curves = [curve_myocardium]
+        elif geom=='myocardium+endo':
+            curve_myocardium = SympyCurve(
+                functions={
+                    "z": s_l*(longilength+s_r*thickness),
+                    "y": s_c*(circumferential_halflength+np.pi*s_r*thickness),
+                    "x": s_r*thickness,
+                    "normal_x": 0,
+                    "normal_y": 0,
+                    "normal_z": -1,
+                },
+                parameterization=curve_parameterization,
+                area=10.,
+            )
+            curves = [curve_myocardium,curve_r0]
+        else:
+            curves = [curve_l0,curve_r0,curve_r1]
+
+        # calculate SDF
+        l_dist = Abs(l-0.5*(longilength+r)) - 0.5 * (longilength+r)
+        c_dist = Abs(c) - (circumferential_halflength+np.pi*r)
+        r_dist = Abs(r-0.5*thickness) - 0.5 * thickness
+        outside_distance = sqrt(
+            Max(l_dist, 0) ** 2 + Max(c_dist, 0) ** 2 + Max(r_dist, 0) ** 2
+        )
+        if geom=='cirjoint':
+            sdf = Abs(c)-(circumferential_halflength+np.pi*r)
+        else:
+            sdf = -outside_distance
+
+        # calculate bounds
+        if geom=='base':
+            bounds = Bounds(
+                {
+                    Parameter("z"): (0., 0.),
+                    Parameter("y"): (-(circumferential_halflength+np.pi*thickness), (circumferential_halflength+np.pi*thickness)),
+                    Parameter("x"): (0, 0.),
+                },
+                parameterization=parameterization,
+            )
+        elif geom=='endo':
+            bounds = Bounds(
+                {
+                    Parameter("z"): (0., longilength+thickness),
+                    Parameter("y"): (-(circumferential_halflength+np.pi*thickness), (circumferential_halflength+np.pi*thickness)),
+                    Parameter("x"): (0., 0.),
+                },
+                parameterization=parameterization,
+            )
+        elif geom=='epi':
+            bounds = Bounds(
+                {
+                    Parameter("z"): (0., longilength+thickness),
+                    Parameter("y"): (-(circumferential_halflength+np.pi*thickness), (circumferential_halflength+np.pi*thickness)),
+                    Parameter("x"): (thickness, thickness),
+                },
+                parameterization=parameterization,
+            )
+        else:
+            bounds = Bounds(
+                {
+                    Parameter("z"): (0., longilength+thickness),
+                    Parameter("y"): (-(circumferential_halflength+np.pi*thickness), (circumferential_halflength+np.pi*thickness)),
+                    Parameter("x"): (0, thickness),
+                },
+                parameterization=parameterization,
+            )
+
+        # initialize Box
+        super().__init__(
+            curves,
+            _sympy_sdf_to_sdf(sdf),
+            dims=3,
+            bounds=bounds,
+            parameterization=parameterization,
+        )
+
+
+class HeartChamber(Geometry):
+    """
+    3D heart Chamber
+    Longitudinal axis parallel to z-axis
+    straight tube with semisphere joint at (0,0,0)
+    with inlet and outlet circle at base
+    base at (0,0,-longlength)
+    apex at (0,0,-longlength/2)
+    radius =longlength/2
+    center of inlet (-longlength/4,0,-longlength) radius =longlength/8
+    center of outlet (longlength/4,0,-longlength) radius =longlength/8
+
+    Parameters
+    ----------
+    parameterization : Parameterization
+        Parameterization of geometry.
+    """
+
+    def __init__(self, longitudinal_length, parameterization=Parameterization(),geom='chamber'):
+        # make sympy symbols to use
+        z_l, radial, angle = Symbol(csg_curve_naming(0)), Symbol(csg_curve_naming(1)), Symbol(csg_curve_naming(2)), Symbol(csg_curve_naming(3))
+        
+        # surface of the cylinder
+        curve_parameterization = Parameterization(
+            {z_l: (0, 1),radial: (0, 1), angle:(-1,1)}
+        )
+        curve_parameterization = Parameterization.combine(
+            curve_parameterization, parameterization
+        )
+        base_radius=longitudinal_length/2.
+        theta=np.pi*angle
+        curve_base = SympyCurve(
+            functions={
+                "x": base_radius*radial* cos(theta),
+                "y": base_radius*radial* sin(theta),
+                "z": longitudinal_length,
+                "normal_x": 0.,
+                "normal_y": 0.,
+                "normal_z": 1.,
+            },
+            parameterization=curve_parameterization,
+            area=np.pi*base_radius**2.,
+        )
+        curve_inlet = SympyCurve(
+            functions={
+                "x": base_radius/4.*radial* cos(theta)-base_radius/2.,
+                "y": base_radius/4.*radial* sin(theta),
+                "z": longitudinal_length,
+                "normal_x": 0.,
+                "normal_y": 0.,
+                "normal_z": 1.,
+            },
+            parameterization=curve_parameterization,
+            area=np.pi*base_radius**2.,
+        )
+        curve_outlet = SympyCurve(
+            functions={
+                "x": base_radius/4.*radial* cos(theta)+base_radius/2.,
+                "y": base_radius/4.*radial* sin(theta),
+                "z": longitudinal_length,
+                "normal_x": 0.,
+                "normal_y": 0.,
+                "normal_z": 1.,
+            },
+            parameterization=curve_parameterization,
+            area=np.pi*base_radius**2.,
+        )
+        curve_topwall = SympyCurve(
+            functions={
+                "x": base_radius* cos(theta),
+                "y": base_radius* sin(theta),
+                "z": z_l*longitudinal_length,
+                "normal_x": cos(theta),
+                "normal_y": sin(theta),
+                "normal_z": 0.,
+            },
+            parameterization=curve_parameterization,
+            area=np.pi*2.*base_radius*longitudinal_length,
+        )
+        hemisphere_radius=base_radius
+        z_plane_radius_ratio=sqrt(1.-z_l**2.)
+        curve_apex = SympyCurve(
+            functions={
+                "x": z_plane_radius_ratio*hemisphere_radius* cos(theta),
+                "y": z_plane_radius_ratio*hemisphere_radius* sin(theta),
+                "z": -z_l*hemisphere_radius,
+                "normal_x": z_plane_radius_ratio*cos(theta),
+                "normal_y": z_plane_radius_ratio*sin(theta),
+                "normal_z": -z_l,
+            },
+            parameterization=curve_parameterization,
+            area=2.*np.pi*hemisphere_radius**2.,
+        )
+        split_z_plane_radius_ratio=sqrt(1.-Max(0.,z_l*3.-2.)**2.)
+        curve_interior = SympyCurve(
+            functions={
+                "x": split_z_plane_radius_ratio*radial*hemisphere_radius* cos(theta),
+                "y": split_z_plane_radius_ratio*radial*hemisphere_radius* sin(theta),
+                "z": -(z_l*3.-2.)*hemisphere_radius*radial,
+                "normal_x": split_z_plane_radius_ratio*cos(theta),
+                "normal_y": split_z_plane_radius_ratio*sin(theta),
+                "normal_z": -z_l,
+            },
+            parameterization=curve_parameterization,
+            area=2.*np.pi*hemisphere_radius**2.,
+        )
+        if geom=='chamber':
+            curves = [curve_interior]
+        elif geom=='inlet':
+            curves = [curve_inlet]
+        elif geom=='outlet':
+            curves = [curve_outlet]
+        elif geom=='base':
+            curves = [curve_base]
+        elif geom=='wall':
+            curves = [curve_topwall,curve_apex]
+        
+        x,y,z = Symbol("x"),Symbol("y"),Symbol("z")
+        # calculate SDF
+        split_z_plane_radius_ratio_distance = sqrt(1.-Max(0.,-z/hemisphere_radius)**2.)
+        wall_distance=split_z_plane_radius_ratio_distance-(x/hemisphere_radius)**2.-(y/hemisphere_radius)**2.
+        base_distance = longitudinal_length-z
+        sdf = base_distance*wall_distance
+        if geom=='chamber':
+            sdf = Max(0.,sdf)
+        
+        # calculate bounds
+        bounds = Bounds(
+            {
+                Parameter("x"): (-hemisphere_radius, hemisphere_radius),
+                Parameter("y"): (-hemisphere_radius, hemisphere_radius),
+                Parameter("z"): (-longitudinal_length/2,longitudinal_length),
             },
             parameterization=parameterization,
         )

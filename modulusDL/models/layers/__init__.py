@@ -3,5 +3,6 @@ from .inherited import (
     singleInputInheritedFCLayer,
     cosSinLayer,
     cosLayer,
-    sinLayer
+    sinLayer,
+    PILayer
 )

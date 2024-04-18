@@ -10,7 +10,7 @@ from modulus.node import Node
 
 from typing import Optional, Callable, List, Dict, Union, Tuple
 from modulus.key import Key
-
+import torch
 class NavierStokes_CoordTransformed(PDE):
     """
     This class is adapted from NVIDIAModulus v22.09 pde.NavierStokes
@@ -54,7 +54,7 @@ class NavierStokes_CoordTransformed(PDE):
 
     name = "NavierStokes_CoordTransformed"
 
-    def __init__(self, nu,case_coord_strList=None,case_param_strList=None, rho=1, dim=3, time=True, mixed_form=False):
+    def __init__(self, nu,case_coord_strList=None,case_param_strList=None, rho=1, dim=3, time=True, mixed_form=False,Reynolds=False):
         # set params
         self.dim = dim
         self.time = time
@@ -160,7 +160,34 @@ class NavierStokes_CoordTransformed(PDE):
                 - (mu * w.diff(z)).diff(z)
                 - (mu * (curl).diff(z))
             )
-
+            if Reynolds is not False:
+                ref_vec_x=Symbol(Reynolds[0])
+                ref_vec_y=Symbol(Reynolds[1])
+                ref_vec_z=Symbol(Reynolds[2])
+                VELOCITY=(u*ref_vec_x+v*ref_vec_y+w*ref_vec_z)
+                self.equations["Re_Inertial"] = (
+                    (rho * VELOCITY).diff(t)
+                    + (
+                        VELOCITY * ((rho * VELOCITY).diff(x)*ref_vec_x
+                        + (rho * VELOCITY).diff(y)*ref_vec_y
+                        + (rho * VELOCITY).diff(z)*ref_vec_z
+                        + rho * (curl))
+                    )
+                )
+                vel_diff=VELOCITY.diff(x)*ref_vec_x+VELOCITY.diff(y)*ref_vec_y+VELOCITY.diff(z)*ref_vec_z
+                
+            
+                self.equations["Re_Viscous"] = (
+                    - (-2 / 3 * mu * (curl)).diff(x)*ref_vec_x
+                    - (-2 / 3 * mu * (curl)).diff(y)*ref_vec_y
+                    - (-2 / 3 * mu * (curl)).diff(z)*ref_vec_z
+                    - (mu * vel_diff).diff(x)*ref_vec_x
+                    - (mu * vel_diff).diff(y)*ref_vec_y
+                    - (mu * vel_diff).diff(z)*ref_vec_z
+                    - (mu * (curl).diff(x)*ref_vec_x)
+                    - (mu * (curl).diff(y)*ref_vec_y)
+                    - (mu * (curl).diff(z)*ref_vec_z)
+                )
             if self.dim == 2:
                 self.equations.pop("momentum_z")
 
@@ -387,7 +414,7 @@ class Diffusion_CoordTransformed(PDE):
                 self.equations.pop("compatibility_T_yz")
 
 
-class Fiber_Strain(PDE):
+class Vector_Potential(PDE):
     """
     FungModel
 
@@ -399,104 +426,119 @@ class Fiber_Strain(PDE):
 
     
 
-    def __init__(self, f0_s0_n0,Fmat_toFinal=None,Gmat_to_ref=None,ID_string=''):
-        # f0_s0_n0 is constant (non solvable)
-        self.name = ID_string+"Fiber_Strain"
-        fxyz=np.array([[f0_s0_n0[0][0]],[f0_s0_n0[0][1]],[f0_s0_n0[0][2]]])
-        sxyz=np.array([[f0_s0_n0[1][0]],[f0_s0_n0[1][1]],[f0_s0_n0[1][2]]])
-        nxyz=np.array([[f0_s0_n0[2][0]],[f0_s0_n0[2][1]],[f0_s0_n0[2][2]]])
-        
-        I=np.array([[Number(1),Number(0),Number(0)],
-                    [Number(0),Number(1),Number(0)],
-                    [Number(0),Number(0),Number(1)]])
-        if Fmat_toFinal is None:
-            F=I
-        else:
-            F=np.array(Fmat_toFinal)
-        if Gmat_to_ref is None:
-            G=I
-        else:
-            G=np.array(Gmat_to_ref)
-        S=0.5*(F.T.dot(F)-G.T.dot(G))
-        stretch_f=(np.sum(G.dot(fxyz)**2.))**0.5
-        stretch_s=(np.sum(G.dot(sxyz)**2.))**0.5
-        stretch_n=(np.sum(G.dot(nxyz)**2.))**0.5
-        self.equations={}
-        self.equations[ID_string+"strain_ff"] = np.sum(fxyz*fxyz.reshape((1,-1))*S)/stretch_f/stretch_f
-        self.equations[ID_string+"strain_fs"] = np.sum(fxyz*sxyz.reshape((1,-1))*S)/stretch_f/stretch_s
-        self.equations[ID_string+"strain_fn"] = np.sum(fxyz*nxyz.reshape((1,-1))*S)/stretch_f/stretch_n
-        self.equations[ID_string+"strain_sf"] = np.sum(fxyz*sxyz.reshape((1,-1))*S)/stretch_f/stretch_s
-        self.equations[ID_string+"strain_ss"] = np.sum(sxyz*sxyz.reshape((1,-1))*S)/stretch_s/stretch_s
-        self.equations[ID_string+"strain_sn"] = np.sum(sxyz*nxyz.reshape((1,-1))*S)/stretch_s/stretch_n
-        self.equations[ID_string+"strain_nf"] = np.sum(fxyz*nxyz.reshape((1,-1))*S)/stretch_f/stretch_n
-        self.equations[ID_string+"strain_ns"] = np.sum(sxyz*nxyz.reshape((1,-1))*S)/stretch_s/stretch_n
-        self.equations[ID_string+"strain_nn"] = np.sum(nxyz*nxyz.reshape((1,-1))*S)/stretch_n/stretch_n
-        self.equations[ID_string+"Jacobian"] = Matrix(F).det()/Matrix(G).det()
-        
-class FungModel(PDE):
-    """
-    FungModel
-
-    Parameters
-    ==========
-    dim : int
-        Dimension of the equations (1, 2, or 3). Default is 3.
-    """
-
-    
-
-    def __init__(self, Cstrain,Cff,Css,Cnn,Cfs,Cfn,Csn,p,strain_fsnMatrix,Jacobian,ID_string=''):
+    def __init__(self, instr_List,outstr_List,case_coord_strList=None):
         # set params
-        self.name = ID_string+"FungModel"
-        QQ = Cff*strain_fsnMatrix[0][0]**2.0 +\
-            Css*strain_fsnMatrix[1][1]**2.0 +\
-                Cnn*strain_fsnMatrix[2][2]**2.0 +\
-                    Csn*strain_fsnMatrix[1][2]**2.0 +\
-                    Csn*strain_fsnMatrix[2][1]**2.0 +\
-                        Cfs*strain_fsnMatrix[0][1]**2.0 +\
-                        Cfs*strain_fsnMatrix[1][0]**2.0 +\
-                            Cfs*strain_fsnMatrix[0][2]**2.0 +\
-                            Cfn*strain_fsnMatrix[2][0]**2.0
+        
+        if case_coord_strList is None:
+            case_coord_strList=["x_case","y_case","z_case"]
+        x = Symbol(case_coord_strList[0])
+        y = Symbol(case_coord_strList[1])
+        z = Symbol(case_coord_strList[2])
+        input_variables = {case_coord_strList[0]: x, case_coord_strList[1]: y, case_coord_strList[2]: z}
+        
+        vec_potential=[]
+        for n_str in instr_List:
+            vec_potential.append(Function(n_str)(*input_variables))
         self.equations = {}
-        self.equations[ID_string+"strain_energy_density_constant"] = Cstrain/2.*(exp(QQ) -  1.0) - p
-        self.equations[ID_string+"incompressibility"]=p*(Jacobian-Number(1))
-        self.equations[ID_string+"strain_energy_density_eqn"] = Cstrain/2.*(exp(QQ) -  1.0) - p*(Jacobian-Number(1))
-        self.equations[ID_string+"strain_energy_density"] = Cstrain/2.*(exp(QQ) -  1.0)
-class SurfaceNormal_Stress(PDE):
-    name = "SurfaceNormal_Stress"
-    def __init__(self, f0_s0_n0,strain_energy_densityStr,Strain_fsn_matrix,normal_SymList=None,Fmat_toFinal=None,Gmat_to_ref=None):
-        # f0_s0_n0 is constant (non solvable)
-        f0_s0_n0=np.array(f0_s0_n0)
-        if normal_SymList is None:
-            normal_SymList = [Symbol("normal_x"), Symbol("normal_y"), Symbol("normal_z")]
-        normal_SymList = np.array(normal_SymList)
-        I=np.array([[Number(1),Number(0),Number(0)],
-                    [Number(0),Number(1),Number(0)],
-                    [Number(0),Number(0),Number(1)]])
-        if Fmat_toFinal is None:
-            F=I
+        self.equations[outstr_List[0]] = vec_potential[2].diff(y)-vec_potential[1].diff(z)
+        self.equations[outstr_List[1]] = vec_potential[0].diff(z)-vec_potential[2].diff(x)
+        self.equations[outstr_List[2]] = vec_potential[1].diff(x)-vec_potential[0].diff(y)
+        
+
+              
+class FungModel_ZeroDerivative(PDE):
+    """
+    FungModel
+
+    Parameters
+    ==========
+    dim : int
+        Dimension of the equations (1, 2, or 3). Default is 3.
+    """
+
+    
+
+    def __init__(self, F,p_str,ID_string='', Q=None,case_coord_strList=None):
+        # set params
+        
+        self.name = ID_string
+        if case_coord_strList is None:
+            case_coord_strList=["x_case","y_case","z_case"]
+        x = Symbol(case_coord_strList[0])
+        y = Symbol(case_coord_strList[1])
+        z = Symbol(case_coord_strList[2])
+        input_variables = {case_coord_strList[0]: x, case_coord_strList[1]: y, case_coord_strList[2]: z}
+        p = Function(p_str)(*input_variables)
+        if Q is None:
+            Finv=Matrix(F).inv(method="LU")
         else:
-            F=np.array(Fmat_toFinal)
-        if Gmat_to_ref is None:
-            G=I
-        else:
-            G=np.array(Gmat_to_ref)
-        fdotnorm=F.dot(normal_SymList.reshape((-1,1)))
-        fsn=G.dot(f0_s0_n0.T).T
-        fsn_normal=(fsn/(np.sum(fsn**2.,axis=-1,keepdims=True))**0.5).dot(fdotnorm)/(np.sum(fdotnorm**2.))**0.5
-        inputVar={}
-        for n in range(3):
-            for m in range(3):
-                inputVar[Strain_fsn_matrix[n][m].name]=Strain_fsn_matrix[n][m]
-        strain_energy_density=Function(strain_energy_densityStr)(*inputVar)
-        sigma=[]
-        for n in range(3):
-            sigma.append([])
-            for m in range(3):
-                sigma[-1].append(strain_energy_density.diff(Strain_fsn_matrix[n][m]))
-        sigma_np=np.array(sigma)
+            Finv=Matrix(F).inv(method="LU")*Matrix(Q).T
+        pdu=Finv*Matrix([[p.diff(x)],[p.diff(y)],[p.diff(z)]])
         self.equations = {}
-        self.equations["surface_normal_stress"] = np.sum(fsn_normal.reshape((1,-1))*fsn_normal*sigma_np)
+        self.equations[ID_string+"pdu"] = pdu[0,0]
+        self.equations[ID_string+"pdv"] = pdu[1,0]
+        self.equations[ID_string+"pdw"] = pdu[2,0]
+class pDerivative(PDE):
+    """
+    FungModel
+
+    Parameters
+    ==========
+    dim : int
+        Dimension of the equations (1, 2, or 3). Default is 3.
+    """
+
+    
+
+    def __init__(self,p_str,ID_string='',case_coord_strList=None):
+        # set params
+        
+        self.name = ID_string
+        if case_coord_strList is None:
+            case_coord_strList=["x_case","y_case","z_case"]
+        x = Symbol(case_coord_strList[0])
+        y = Symbol(case_coord_strList[1])
+        z = Symbol(case_coord_strList[2])
+        input_variables = {case_coord_strList[0]: x, case_coord_strList[1]: y, case_coord_strList[2]: z}
+        p = Function(p_str)(*input_variables)
+        self.equations = {}
+        self.equations[ID_string+p_str+"dx"] = p.diff(x)
+        self.equations[ID_string+p_str+"dy"] = p.diff(y)
+        self.equations[ID_string+p_str+"dz"] = p.diff(z)
+class FungModel_ZeroDerivative_withpDerivative(torch.nn.Module):
+    '''
+    inputs:
+        x:
+            Key("pdx"):
+            Key("pdy"):
+            Key("pdz"):
+        o:
+            Key("Rux"):
+            Key("Ruy"):
+            Key("Ruz"):
+            Key("Rvx"):
+            Key("Rvy"):
+            Key("Rvz"):
+            Key("Rwx"):
+            Key("Rwy"):
+            Key("Rwz"):
+    return:
+        Key("pdu"):
+        Key("pdv"):
+        Key("pdw"):
+    '''
+    def __init__(self,minuseye=False):
+        super().__init__()
+        if minuseye:
+            self.eye=torch.eye(3,dtype=torch.float)
+        else:
+            self.eye=torch.zeros((3,3),dtype=torch.float)
+    def forward(self,x,o):#o is the unloaded deformation gradient tensor
+        S=torch.stack([x[...,0:1],x[...,1:2],x[...,2:3]],dim=x.dim()-1)
+        F=torch.stack([o[...,0:3],o[...,3:6],o[...,6:9]],dim=x.dim())-self.eye
+        P=torch.linalg.solve(F, S, left=True)
+        #F=torch.matmul(F,torch.linalg.inv(G))
+        return torch.flatten(P, start_dim=x.dim()-1)
 class Fmat(PDE):
     """
     FungModel
@@ -509,7 +551,7 @@ class Fmat(PDE):
 
     
     
-    def __init__(self,case_coord_strList=None,invert=False,matrix_string='F'):
+    def __init__(self,case_coord_strList=None,matrix_string='F',returnQR=False):
         # set params
         self.name = matrix_string+"mat"
         velstr=['u','v','w']
@@ -525,24 +567,414 @@ class Fmat(PDE):
         w = Function("w")(*input_variables)
         
         # velocity componets  0.5*(F.T*F-I)
-        F_temp=np.array([[u.diff(x)+Number(1.),u.diff(y),u.diff(z)],
+        F=np.array([[u.diff(x)+Number(1.),u.diff(y),u.diff(z)],
                 [v.diff(x),v.diff(y)+Number(1.),v.diff(z)],
                 [w.diff(x),w.diff(y),w.diff(z)+Number(1.)]])
-        if invert is True:
-            F=Matrix(F_temp).inv(method="LU")
-        elif invert is False:
-            F=F_temp
-        else:
-            F=F_temp.dot(np.array(invert))
         self.equations = {}
-        self.equations[matrix_string+"_"+velstr[0]+coordstr[0]] = F[0,0]
-        self.equations[matrix_string+"_"+velstr[0]+coordstr[1]] = F[0,1]
-        self.equations[matrix_string+"_"+velstr[0]+coordstr[2]] = F[0,2]
-        self.equations[matrix_string+"_"+velstr[1]+coordstr[0]] = F[1,0]
-        self.equations[matrix_string+"_"+velstr[1]+coordstr[1]] = F[1,1]
-        self.equations[matrix_string+"_"+velstr[1]+coordstr[2]] = F[1,2]
-        self.equations[matrix_string+"_"+velstr[2]+coordstr[0]] = F[2,0]
-        self.equations[matrix_string+"_"+velstr[2]+coordstr[1]] = F[2,1]
-        self.equations[matrix_string+"_"+velstr[2]+coordstr[2]] = F[2,2]
+        if returnQR:
+            Q, R=Matrix(F).QRdecomposition()
+            self.equations[matrix_string+"Q_"+velstr[0]+coordstr[0]] = Q[0,0]
+            self.equations[matrix_string+"Q_"+velstr[0]+coordstr[1]] = Q[0,1]
+            self.equations[matrix_string+"Q_"+velstr[0]+coordstr[2]] = Q[0,2]
+            self.equations[matrix_string+"Q_"+velstr[1]+coordstr[0]] = Q[1,0]
+            self.equations[matrix_string+"Q_"+velstr[1]+coordstr[1]] = Q[1,1]
+            self.equations[matrix_string+"Q_"+velstr[1]+coordstr[2]] = Q[1,2]
+            self.equations[matrix_string+"Q_"+velstr[2]+coordstr[0]] = Q[2,0]
+            self.equations[matrix_string+"Q_"+velstr[2]+coordstr[1]] = Q[2,1]
+            self.equations[matrix_string+"Q_"+velstr[2]+coordstr[2]] = Q[2,2]
+            self.equations[matrix_string+"R_"+velstr[0]+coordstr[0]] = R[0,0]
+            self.equations[matrix_string+"R_"+velstr[0]+coordstr[1]] = R[0,1]
+            self.equations[matrix_string+"R_"+velstr[0]+coordstr[2]] = R[0,2]
+            self.equations[matrix_string+"R_"+velstr[1]+coordstr[0]] = R[1,0]
+            self.equations[matrix_string+"R_"+velstr[1]+coordstr[1]] = R[1,1]
+            self.equations[matrix_string+"R_"+velstr[1]+coordstr[2]] = R[1,2]
+            self.equations[matrix_string+"R_"+velstr[2]+coordstr[0]] = R[2,0]
+            self.equations[matrix_string+"R_"+velstr[2]+coordstr[1]] = R[2,1]
+            self.equations[matrix_string+"R_"+velstr[2]+coordstr[2]] = R[2,2]
+            self.equations[matrix_string+"_det"] = R[0,0]*R[1,1]*R[2,2]
+        else:
+            self.equations[matrix_string+"_"+velstr[0]+coordstr[0]] = u.diff(x)+Number(1.)
+            self.equations[matrix_string+"_"+velstr[0]+coordstr[1]] = u.diff(y)
+            self.equations[matrix_string+"_"+velstr[0]+coordstr[2]] = u.diff(z)
+            self.equations[matrix_string+"_"+velstr[1]+coordstr[0]] = v.diff(x)
+            self.equations[matrix_string+"_"+velstr[1]+coordstr[1]] = v.diff(y)+Number(1.)
+            self.equations[matrix_string+"_"+velstr[1]+coordstr[2]] = v.diff(z)
+            self.equations[matrix_string+"_"+velstr[2]+coordstr[0]] = w.diff(x)
+            self.equations[matrix_string+"_"+velstr[2]+coordstr[1]] = w.diff(y)
+            self.equations[matrix_string+"_"+velstr[2]+coordstr[2]] = w.diff(z)+Number(1.)
+            #self.equations[matrix_string+"_det"] = F[0,0]*F[1,1]*F[2,2]
+class FungModel(torch.nn.Module):
+    """
+    FungModel
 
+    Parameters
+    ==========
+    dim : int
+        Dimension of the equations (1, 2, or 3). Default is 3.
+    inputs:
+        Key("Cux"):
+        Key("Cuy"):
+        Key("Cuz"):
+        Key("Cvx"):
+        Key("Cvy"):
+        Key("Cvz"):
+        Key("Cwx"):
+        Key("Cwy"):
+        Key("Cwz"):
+    return:
+        Key("Sux"):
+        Key("Suy"):
+        Key("Suz"):
+        Key("Svx"):
+        Key("Svy"):
+        Key("Svz"):
+        Key("Swx"):
+        Key("Swy"):
+        Key("Swz"):
+    """
+
+    
+
+    def __init__(self, Cstrain,Cff,Css,Cnn,Cfs,Cfn,Csn):
+        super().__init__()
+        Cstrain=torch.tensor(Cstrain/2.)
+        self.register_buffer("Cstrain", Cstrain, persistent=False)
+        Cfsn=torch.tensor([Cff,Cfs,Cfn,Cfs,Css,Csn,Cfn,Csn,Cnn],dtype=torch.float)
+        self.register_buffer("Cfsn", Cfsn, persistent=False)
+        #self.p=torch.nn.Parameter(torch.empty((1,1)))
+        #self.reset_parameters()
+    def forward(self,x,o):#3x3 strain,determinant
+        QQ =torch.sum(self.Cfsn*x[...,0:9]**2.0,dim=-1,keepdim=True)
+        W=self.Cstrain*(torch.exp(QQ) -  1.0)
+        return W-o[...,0:1]*(1.-o[...,1:2])
+    def reset_parameters(self,set_to=0.1) -> None:
+        torch.nn.init.constant_(self.p, set_to)
+class FungModel_incompressible(torch.nn.Module):
+    """
+    FungModel
+
+    Parameters
+    ==========
+    dim : int
+        Dimension of the equations (1, 2, or 3). Default is 3.
+    inputs:
+        Key("Cux"):
+        Key("Cuy"):
+        Key("Cuz"):
+        Key("Cvx"):
+        Key("Cvy"):
+        Key("Cvz"):
+        Key("Cwx"):
+        Key("Cwy"):
+        Key("Cwz"):
+    return:
+        Key("Sux"):
+        Key("Suy"):
+        Key("Suz"):
+        Key("Svx"):
+        Key("Svy"):
+        Key("Svz"):
+        Key("Swx"):
+        Key("Swy"):
+        Key("Swz"):
+    """
+
+    
+
+    def __init__(self, Cstrain,Cff,Css,Cnn,Cfs,Cfn,Csn):
+        super().__init__()
+        Cstrain=torch.tensor(Cstrain/2.)
+        self.register_buffer("Cstrain", Cstrain, persistent=False)
+        Cfsn=torch.tensor([Cff,Cfs,Cfn,Cfs,Css,Csn,Cfn,Csn,Cnn],dtype=torch.float)
+        self.register_buffer("Cfsn", Cfsn, persistent=False)
+        #self.p=torch.nn.Parameter(torch.empty((1,1)))
+        #self.reset_parameters()
+    def forward(self,x):#3x3 strain,determinant
+        QQ =torch.sum(self.Cfsn*x[...,0:9]**2.0,dim=-1,keepdim=True)
+        W=self.Cstrain*(torch.exp(QQ) -  1.0)
+        return W
+    def reset_parameters(self,set_to=0.1) -> None:
+        torch.nn.init.constant_(self.p, set_to)
+class FungModel_fsn_endo_surfaceStress_FTF(torch.nn.Module):
+    """
+    FungModel
+
+    Parameters
+    ==========
+    dim : int
+        Dimension of the equations (1, 2, or 3). Default is 3.
+    inputs:
+        Key("W"):
+        Key("Cux"):
+        Key("Cuy"):
+        Key("Cuz"):
+        Key("Cvx"):
+        Key("Cvy"):
+        Key("Cvz"):
+        Key("Cwx"):
+        Key("Cwy"):
+        Key("Cwz"):
+    o:
+        Key("detJ"):
+        Key("Fux"):
+        Key("Fuy"):
+        Key("Fuz"):
+        Key("Fvx"):
+        Key("Fvy"):
+        Key("Fvz"):
+        Key("Fwx"):
+        Key("Fwy"):
+        Key("Fwz"):
+    return:
+        Key("Surface stress"):
+    """
+
+    
+
+    def __init__(self,Cff,Css,Cnn,Cfs,Cfn,Csn,transpose_F=False):
+        super().__init__()
+        Cfsn=torch.tensor([Cff,Cfs,Cfn,Cfs,Css,Csn,Cfn,Csn,Cnn],dtype=torch.float)
+        self.register_buffer("Cfsn", Cfsn, persistent=False)
+        self.transpose_F=transpose_F
+    def forward(self,x,o):#[W,strain_fsn_nn,]
+        dWdEf_flat= self.Cfsn*x[...,0:1]*x[...,1:10]*2.
+        dWdEf=torch.stack([dWdEf_flat[...,0:3],dWdEf_flat[...,3:6],dWdEf_flat[...,6:9]],dim=x.dim()-1)
+        F=torch.stack([o[...,1:4],o[...,4:7],o[...,7:10]],dim=x.dim()-1)
+        FT=torch.transpose(F,-1,-2)
+        if self.transpose_F:
+            stress=torch.matmul(FT,torch.matmul(dWdEf,F))/torch.unsqueeze(o[...,0:1], dim=x.dim()-1)
+        else:
+            stress=torch.matmul(F,torch.matmul(dWdEf,FT))/torch.unsqueeze(o[...,0:1], dim=x.dim()-1)
         
+        return torch.flatten(stress, start_dim=x.dim()-1)
+class Inverse(torch.nn.Module):
+    '''
+    inputs:
+        Key("Fux"):
+        Key("Fuy"):
+        Key("Fuz"):
+        Key("Fvx"):
+        Key("Fvy"):
+        Key("Fvz"):
+        Key("Fwx"):
+        Key("Fwy"):
+        Key("Fwz"):
+    return:
+        Key("Sux"):
+        Key("Suy"):
+        Key("Suz"):
+        Key("Svx"):
+        Key("Svy"):
+        Key("Svz"):
+        Key("Swx"):
+        Key("Swy"):
+        Key("Swz"):
+    '''
+    def __init__(self,inverse=False):
+        super().__init__()
+        self.inverse=inverse
+        F=torch.eye(3,dtype=torch.float)
+        self.register_buffer("F", F, persistent=False)
+    def forward(self,x):
+        G=torch.stack([x[...,0:3],x[...,3:6],x[...,6:9]],dim=x.dim()-1)
+        F=torch.linalg.solve_triangular(G, self.F, upper=True, left=False)
+        return torch.flatten(F, start_dim=x.dim()-1)
+class MatrixRotate(torch.nn.Module):
+    '''
+    inputs:
+        Key("Sux"):
+        Key("Suy"):
+        Key("Suz"):
+        Key("Svx"):
+        Key("Svy"):
+        Key("Svz"):
+        Key("Swx"):
+        Key("Swy"):
+        Key("Swz"):
+    return:
+        Key("Qux"):
+        Key("Quy"):
+        Key("Quz"):
+        Key("Qvx"):
+        Key("Qvy"):
+        Key("Qvz"):
+        Key("Qwx"):
+        Key("Qwy"):
+        Key("Qwz"):
+    '''
+    def __init__(self,do_transpose=False):
+        super().__init__()
+        self.do_transpose=do_transpose
+    def forward(self,x,o):
+        S=torch.stack([x[...,0:3],x[...,3:6],x[...,6:9]],dim=x.dim()-1)
+        Q=torch.stack([o[...,0:3],o[...,3:6],o[...,6:9]],dim=x.dim()-1)
+        QT=torch.transpose(Q,-1,-2)
+        if self.do_transpose:
+            QSQ=torch.matmul(Q,torch.matmul(S,QT))
+        else:
+            QSQ=torch.matmul(QT,torch.matmul(S,Q))
+        return torch.flatten(QSQ, start_dim=x.dim()-1)
+class Strain_E(torch.nn.Module):
+    '''
+    inputs:
+        Key("Fux"):
+        Key("Fuy"):
+        Key("Fuz"):
+        Key("Fvx"):
+        Key("Fvy"):
+        Key("Fvz"):
+        Key("Fwx"):
+        Key("Fwy"):
+        Key("Fwz"):
+    return:
+        Key("Sux"):
+        Key("Suy"):
+        Key("Suz"):
+        Key("Svx"):
+        Key("Svy"):
+        Key("Svz"):
+        Key("Swx"):
+        Key("Swy"):
+        Key("Swz"):
+    '''
+    def __init__(self,inverse=False):
+        super().__init__()
+        self.inverse=inverse
+        F=torch.eye(3,dtype=torch.float)
+        self.register_buffer("F", F, persistent=False)
+    def forward(self,x):
+        if self.inverse:
+            G=torch.stack([x[...,0:3],x[...,3:6],x[...,6:9]],dim=x.dim()-1)
+            F=torch.linalg.solve_triangular(G, self.F, upper=True, left=False)
+        else:
+            F=torch.stack([x[...,0:3],x[...,3:6],x[...,6:9]],dim=x.dim()-1)
+        FTF=torch.matmul(torch.transpose(F,-1,-2),F)
+        return torch.flatten(FTF, start_dim=x.dim()-1)
+class Strain_E_withunload(torch.nn.Module):
+    '''
+    inputs:
+        x:
+            Key("Fux"):
+            Key("Fuy"):
+            Key("Fuz"):
+            Key("Fvx"):
+            Key("Fvy"):
+            Key("Fvz"):
+            Key("Fwx"):
+            Key("Fwy"):
+            Key("Fwz"):
+        o:
+            Key("Gux"):
+            Key("Guy"):
+            Key("Guz"):
+            Key("Gvx"):
+            Key("Gvy"):
+            Key("Gvz"):
+            Key("Gwx"):
+            Key("Gwy"):
+            Key("Gwz"):
+    return:
+        Key("Sux"):
+        Key("Suy"):
+        Key("Suz"):
+        Key("Svx"):
+        Key("Svy"):
+        Key("Svz"):
+        Key("Swx"):
+        Key("Swy"):
+        Key("Swz"):
+    '''
+    def __init__(self):
+        super().__init__()
+    def forward(self,x,o):#o is the unloaded deformation gradient tensor
+        F=torch.stack([x[...,0:3],x[...,3:6],x[...,6:9]],dim=x.dim()-1)
+        G=torch.stack([o[...,0:3],o[...,3:6],o[...,6:9]],dim=x.dim()-1)
+        F=torch.linalg.solve_triangular(G, F, upper=True, left=False)
+        #F=torch.matmul(F,torch.linalg.inv(G))
+        FTF=torch.matmul(torch.transpose(F,-1,-2),F)
+        return torch.flatten(FTF, start_dim=x.dim()-1)
+class to_fsn_Rotation_Matrix(torch.nn.Module):
+    '''
+    inputs:
+        Key("radial_01"):
+        Key("lvec_x"):
+        Key("lvec_y"):
+        Key("lvec_z"):
+        Key("cvec_x"):
+        Key("cvec_y"):
+        Key("cvec_z"):
+        Key("rvec_x"):
+        Key("rvec_y"):
+        Key("rvec_z"):
+    return:
+        flatten rotation matrix Q where Q[xyz]=[fsn]
+    '''
+    def __init__(self,pm_deg=60.):
+        super().__init__()
+        rad=torch.tensor(pm_deg/180*np.pi)
+        self.register_buffer("rad", rad, persistent=False)
+    def forward(self,x):
+        theta=2.*(x[...,0:1]-0.5)*self.rad
+        costheta=torch.cos(theta)
+        sintheta=torch.sin(theta)
+        zero=torch.zeros_like(x[...,0:1])
+        one=torch.ones_like(x[...,0:1])
+        rotate=torch.stack([torch.cat((sintheta,costheta,zero),dim=-1),torch.cat((-costheta,sintheta,zero),dim=-1),torch.cat((zero,zero,one),dim=-1)],dim=x.dim()-1)
+        lcr=torch.stack((x[...,1:4],x[...,4:7],x[...,7:10]), dim=x.dim()-1)
+        Q=torch.matmul(rotate,lcr)#Q where Q[xyz]=[fsn]
+        return torch.flatten(Q, start_dim=x.dim()-1)
+
+class strain_to_fsn_Rotation_Matrix(torch.nn.Module):
+    '''
+    inputs:
+        x:
+            Key("Sux"):
+            Key("Suy"):
+            Key("Suz"):
+            Key("Svx"):
+            Key("Svy"):
+            Key("Svz"):
+            Key("Swx"):
+            Key("Swy"):
+            Key("Swz"):
+        o:
+            Key("radial_01"):
+            Key("lvec_x"):
+            Key("lvec_y"):
+            Key("lvec_z"):
+            Key("cvec_x"):
+            Key("cvec_y"):
+            Key("cvec_z"):
+            Key("rvec_x"):
+            Key("rvec_y"):
+            Key("rvec_z"):
+    return:
+        flatten rotated Strain matrix
+    '''
+    def __init__(self,pm_deg=60,limit=None):
+        super().__init__()
+        rad=torch.tensor(pm_deg/180*np.pi)
+        self.register_buffer("rad", rad, persistent=False)
+        if limit is None:
+            self.limit=None
+        else:
+            limit=torch.tensor(limit)
+            self.register_buffer("limit", limit, persistent=False)
+        eye=torch.eye(3,dtype=torch.float)
+        self.register_buffer("eye", eye, persistent=False)
+    def forward(self,x,o):
+        S=torch.stack((x[...,0:3],x[...,3:6],x[...,6:9]), dim=x.dim()-1)
+        theta=2.*(o[...,0:1]-0.5)*self.rad
+        costheta=torch.cos(theta)
+        sintheta=torch.sin(theta)
+        zero=torch.zeros_like(o[...,0:1])
+        one=torch.ones_like(o[...,0:1])
+        rotate=torch.stack([torch.cat((sintheta,costheta,zero),dim=-1),torch.cat((-costheta,sintheta,zero),dim=-1),torch.cat((zero,zero,one),dim=-1)],dim=x.dim()-1)
+        lcr=torch.stack((o[...,1:4],o[...,4:7],o[...,7:10]), dim=x.dim()-1)
+        Q=torch.matmul(rotate,lcr)#Q where Q[xyz]=[fsn]
+        S=torch.matmul(torch.matmul(Q,S),torch.transpose(Q,-1,-2))
+        if self.limit is None:
+            S=0.5*(S-self.eye)
+        else:
+            S=self.limit*torch.tanh(0.5*(S-self.eye)/self.limit)
+        return torch.flatten(S, start_dim=x.dim()-1)
