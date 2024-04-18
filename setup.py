@@ -1,7 +1,15 @@
 from setuptools import setup
 setup(
   name = 'modulusDL',         # How you named your package folder (MyLib)
-  packages = ['modulusDL'],   # Chose the same as "name"
+  packages = ['modulusDL','modulusDL.eq','modulusDL.geometry','modulusDL.loss','modulusDL.models','modulusDL.models.layers','modulusDL.solver'],  
+  include_package_data=True,   
+  package_data={
+        'eq':['*'],
+        'geometry':['*'],
+        'loss':['*'],
+        'models':['*'],
+        'solver':['*'],
+        },
   version = '1.0.0',      # Start with a small number and increase it with every change you make
   license='MIT',        # Chose a license from here: https://help.github.com/articles/licensing-a-repository
   description = 'Codes extention from NVIDIA Modulus.',   # Give a short description about your library
